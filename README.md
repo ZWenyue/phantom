@@ -37,10 +37,12 @@ Both projects use data editing to convert human videos into “robotized” demo
 
 
 ## Installation
-1. Clone this repo recursively 
+1. Clone this repo over HTTPS and initialize its submodules.
 
 ```bash
-git clone --recursive git@github.com:MarionLepert/phantom.git
+git clone https://github.com/MarionLepert/phantom.git
+cd phantom
+git submodule update --init --recursive
 ```
 
 2. Run the following script from the root directory to install the required conda environment.
