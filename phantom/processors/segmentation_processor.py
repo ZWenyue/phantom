@@ -19,6 +19,7 @@ import os
 import logging
 import shutil
 from tqdm import tqdm
+import cv2
 import numpy as np
 import mediapy as media
 import argparse
@@ -458,32 +459,82 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         
         # Extract hand pose keypoints for segmentation guidance
         kpts_2d = hamer_data.kpts_2d
-                
-        # Find the frame with highest quality (furthest from edges)
-        max_dist_idx = np.argmax(bbox_min_dist)
-        points = np.expand_dims(kpts_2d[max_dist_idx], axis=1)
-        bbox_dets = det_bboxes[max_dist_idx]
 
-        # Use original bounding box if Detectron2 detection failed
-        if bbox_dets.sum() == 0:
-            bbox_dets = bboxes[max_dist_idx]
+        max_dist_idx = self._select_init_frame(
+            bboxes, bbox_min_dist, hand_detected, kpts_2d, imgs_rgb[0].shape
+        )
+        # Shape (1, 21, 2) so zip(points, [idx]) passes all 21 keypoints
+        # to SAM2 in one call, preventing it from latching onto background.
+        points = kpts_2d[max_dist_idx].reshape(1, -1, 2)
+        bbox_init = bboxes[max_dist_idx]
 
         # Process segmentation in both temporal directions
         masks_forward, sam_imgs_forward = self._run_sam_segmentation(
-            paths, bbox_dets, points, max_dist_idx, reverse=False
+            paths, bbox_init, points, max_dist_idx, reverse=False
         )
         masks_reverse, sam_imgs_reverse = self._run_sam_segmentation(
-            paths, bbox_dets, points, max_dist_idx, reverse=True
+            paths, bbox_init, points, max_dist_idx, reverse=True
         )
 
         # Combine bidirectional results
         sam_imgs = self._combine_sam_images(imgs_rgb, sam_imgs_forward, sam_imgs_reverse)
         masks = self._combine_masks(imgs_rgb, masks_forward, masks_reverse)
 
+        # Remove spurious mask regions (e.g. background objects) by keeping
+        # only connected components that contain hand keypoints
+        masks = self._filter_mask_by_keypoints(masks, kpts_2d, hand_detected)
+
+        # Regenerate visualization after filtering
+        for idx in range(len(imgs_rgb)):
+            img = imgs_rgb[idx].copy()
+            img[masks[idx] > 0] = 0
+            sam_imgs[idx] = img
+
         return {
             f"{hand_side}_masks": masks,
             f"{hand_side}_sam_imgs": sam_imgs
         }
+
+    @staticmethod
+    def _select_init_frame(
+        bboxes: np.ndarray,
+        bbox_min_dist: np.ndarray,
+        hand_detected: np.ndarray,
+        kpts_2d: np.ndarray,
+        frame_shape: Tuple[int, ...],
+        max_bbox_ratio: float = 0.25,
+    ) -> int:
+        """Pick the best initialization frame for SAM2.
+
+        Rejects frames where:
+        - the hand is not detected
+        - the bbox covers more than *max_bbox_ratio* of the image area
+        - all keypoints are (0, 0)
+
+        Among the remaining candidates, returns the frame with the largest
+        ``bbox_min_dist`` (i.e. the hand furthest from the image edges).
+        Falls back to the plain argmax if no frame passes the filters.
+        """
+        img_h, img_w = frame_shape[:2]
+        img_area = float(img_h * img_w)
+        n_frames = len(bboxes)
+
+        candidates = []
+        for i in range(n_frames):
+            if not hand_detected[i]:
+                continue
+            x1, y1, x2, y2 = bboxes[i]
+            bbox_area = float(max(x2 - x1, 0)) * float(max(y2 - y1, 0))
+            if bbox_area / img_area > max_bbox_ratio:
+                continue
+            kpts = kpts_2d[i]
+            if np.allclose(kpts, 0):
+                continue
+            candidates.append(i)
+
+        if candidates:
+            return int(max(candidates, key=lambda i: bbox_min_dist[i]))
+        return int(np.argmax(bbox_min_dist))
 
     def _run_sam_segmentation(
         self,
@@ -513,6 +564,43 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
             [max_dist_idx],
             reverse=reverse
         )
+
+    @staticmethod
+    def _filter_mask_by_keypoints(
+        masks: np.ndarray,
+        kpts_2d: np.ndarray,
+        hand_detected: np.ndarray,
+    ) -> np.ndarray:
+        """Keep only mask connected components that contain hand keypoints.
+
+        For each frame, finds connected components and discards any that
+        don't overlap with the hand keypoints (e.g. background cloth
+        erroneously picked up by SAM2).
+        """
+        filtered = np.zeros_like(masks)
+        for idx in range(len(masks)):
+            mask_uint8 = (masks[idx] > 0).astype(np.uint8)
+            if mask_uint8.sum() == 0:
+                continue
+
+            num_labels, labels = cv2.connectedComponents(mask_uint8)
+
+            keep_labels = set()
+            if hand_detected[idx]:
+                for kpt in kpts_2d[idx]:
+                    x, y = int(round(kpt[0])), int(round(kpt[1]))
+                    if 0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]:
+                        lbl = labels[y, x]
+                        if lbl > 0:
+                            keep_labels.add(lbl)
+
+            if keep_labels:
+                for lbl in keep_labels:
+                    filtered[idx][labels == lbl] = masks[idx][labels == lbl]
+            else:
+                filtered[idx] = masks[idx]
+
+        return filtered
 
     def get_detectron_bboxes(self, imgs_rgb: np.ndarray, bbox_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """

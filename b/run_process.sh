@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 
 # ── defaults ──────────────────────────────────────────────────────────────────
-TASK="basic_pick_place"
+TASK="make_sandwich"
 STEP="all"
 NUM_GPUS=4
 NUM_WORKERS=""  # defaults to NUM_GPUS if not set
@@ -47,6 +47,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PHANTOM_DIR="${SCRIPT_DIR}/../phantom"
 CONFIG_ARGS="--config-path=../b/configs --config-name=egodex"
 DATA_ARGS="data_root_dir=${DATA_ROOT} processed_data_root_dir=${PROCESSED_ROOT}"
+
+# Activate phantom conda env
+eval "$(conda shell.bash hook 2>/dev/null)"
+conda activate phantom
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 run_cmd() {
@@ -83,8 +87,10 @@ step_cpu() {
 # --workers controls parallelism (defaults to NUM_GPUS); GPUs assigned round-robin
 default_workers() {
     case "$1" in
-        robot_inpaint) echo 32 ;;
-        *)             echo "$NUM_GPUS" ;;
+        robot_inpaint)    echo 32 ;;
+        arm_segmentation) echo $(($NUM_GPUS * 2)) ;;
+        hand_inpaint)     echo $(($NUM_GPUS * 1)) ;;
+        *)                echo $(($NUM_GPUS * 8)) ;;
     esac
 }
 
@@ -157,8 +163,14 @@ step_gpu() {
             for wid in $(seq 0 $((actual_workers - 1))); do
                 local lf="/tmp/phantom_${DEMO_NAME}_${mode}_w${wid}.log"
                 local done_ep=0
-                done_ep=$(grep -c '100%|██████████|' "$lf" 2>/dev/null) || true
+                local started=0
+                started=$(grep -c 'PROCESSOR -' "$lf" 2>/dev/null) || true
+                done_ep=$(( started > 0 ? started - 1 : 0 ))
                 local w_total=$(( _w_ends[wid] - _w_starts[wid] + 1 ))
+                # If process exited, all its episodes are done
+                if ! kill -0 "${pids[wid]}" 2>/dev/null; then
+                    done_ep=$w_total
+                fi
                 total_done=$((total_done + done_ep))
                 total_all=$((total_all + w_total))
             done

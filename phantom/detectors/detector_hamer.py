@@ -123,7 +123,7 @@ class DetectorHamer:
         kpts_2d_hamer = None
         for batch in dataloader:
             batch = recursive_to(batch, "cuda")
-            with torch.no_grad():
+            with torch.no_grad(),torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 out = self.model(batch)
 
             batch_T_cam_pred_all = DetectorHamer.get_all_T_cam_pred(batch, out, scaled_focal_length)

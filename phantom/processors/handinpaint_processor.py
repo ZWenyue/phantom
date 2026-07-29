@@ -81,6 +81,17 @@ class HandInpaintProcessor(BaseProcessor):
         self.batch_size: int = 10        # Number of frame groups per batch
         self.scale_factor: int = getattr(args, 'scale_factor', 2)  # Resolution scaling
 
+        # Mask dilation parameters (configurable via Hydra config)
+        morph_type_str = getattr(args, 'mask_dilate_kernel', 'MORPH_ELLIPSE')
+        self.mask_dilate_type: int = getattr(cv2, morph_type_str, cv2.MORPH_ELLIPSE)
+        self.mask_dilate_size: int = getattr(args, 'mask_dilate_size', 3)
+        self.mask_dilate_iterations: int = getattr(args, 'mask_dilate_iterations', 4)
+
+        # Inpaint resolution: E2FGVI works best at low res (~240-480p).
+        # 0 means use the frame size as-is (legacy behavior).
+        self.inpaint_resolution: int = getattr(args, 'inpaint_resolution', 0)
+        self._original_size: Optional[Tuple[int, int]] = None
+
     def _clear_gpu_memory(self) -> None:
         """Clear GPU memory cache and trigger garbage collection."""
         torch.cuda.empty_cache()
@@ -129,10 +140,10 @@ class HandInpaintProcessor(BaseProcessor):
     def _load_and_prepare_frames(self, paths: Any) -> List[Image.Image]:
         """Load video frames and prepare them for processing."""
         frames = self.read_frame_from_videos(paths.video_rgb_imgs)
-        
+
         # Calculate output dimensions based on configuration
         h, w = frames[0].height, frames[0].width
-        
+
         if self.epic:
             size = (w, h)
         else:
@@ -143,7 +154,21 @@ class HandInpaintProcessor(BaseProcessor):
             output_resolution = output_resolution.astype(np.int32)
             size = output_resolution
             frames, size = self.resize_frames(frames, size)
-            
+
+        # Downscale for inpainting if inpaint_resolution is set
+        if self.inpaint_resolution > 0:
+            self._original_size = (frames[0].width, frames[0].height)
+            ir = self.inpaint_resolution
+            scale = ir / max(self._original_size[0], self._original_size[1])
+            if scale < 1.0:
+                inpaint_w = int(self._original_size[0] * scale)
+                inpaint_h = int(self._original_size[1] * scale)
+                inpaint_size = (inpaint_w, inpaint_h)
+                logger.info(f"Downscaling for inpaint: {self._original_size} -> {inpaint_size}")
+                frames, _ = self.resize_frames(frames, inpaint_size)
+            else:
+                self._original_size = None
+
         return frames
 
     def _process_frames_in_batches(self, frames: List[Image.Image], paths: Any, 
@@ -360,14 +385,23 @@ class HandInpaintProcessor(BaseProcessor):
 
     def _verify_and_save_results(self, comp_frames: List[Optional[np.ndarray]], paths: Any) -> None:
         """Verify all frames were processed and save the final video."""
-        missing_frames = [i for i, frame in enumerate(comp_frames) 
+        missing_frames = [i for i, frame in enumerate(comp_frames)
                          if frame is None or (isinstance(frame, np.ndarray) and frame.size == 0)]
-        
+
         if missing_frames:
             raise RuntimeError(f"Still found unprocessed frames after cleanup: {missing_frames}")
-            
+
+        # Upscale back to original resolution if we downscaled for inpainting
+        if self._original_size is not None:
+            ow, oh = self._original_size
+            logger.info(f"Upscaling inpaint result back to {self._original_size}")
+            comp_frames = [
+                cv2.resize(f, (ow, oh), interpolation=cv2.INTER_LANCZOS4)
+                for f in comp_frames
+            ]
+
         logger.info("Successfully processed all frames")
-        
+
         # Save final inpainted video
         media.write_video(paths.video_human_inpaint, comp_frames, fps=15, codec="ffv1")
 
@@ -399,36 +433,33 @@ class HandInpaintProcessor(BaseProcessor):
                     ref_index.append(i)
         return ref_index
 
-    @staticmethod
-    def read_mask(mask_path: str, size: Tuple[int, int]) -> List[Image.Image]:
+    def read_mask(self, mask_path: str, size: Tuple[int, int]) -> List[Image.Image]:
         """
         Load and process hand segmentation masks for inpainting guidance.
-        
+
         Args:
             mask_path: Path to mask file containing hand segmentation data
             size: Target size (width, height) for mask resizing
-            
+
         Returns:
             List of processed PIL Images containing binary hand masks
         """
         masks = []
         frames_media = np.load(mask_path, allow_pickle=True)
         frames = [frame for frame in frames_media]
-        
+
+        ks = self.mask_dilate_size
+        kernel = cv2.getStructuringElement(self.mask_dilate_type, (ks, ks))
+
         for mask_frame in frames:
-            # Convert to PIL Image and resize
             mask_img = Image.fromarray(mask_frame)
             mask_img = mask_img.resize(size, Image.NEAREST)
             mask_array = np.array(mask_img.convert('L'))
-            
-            # Create binary mask
+
             binary_mask = np.array(mask_array > 0).astype(np.uint8)
-            
-            # Apply morphological dilation to expand mask boundaries
-            # This helps ensure complete coverage of hand regions
-            dilated_mask = cv2.dilate(binary_mask,
-                                    cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3)),
-                                    iterations=4)
+
+            dilated_mask = cv2.dilate(binary_mask, kernel,
+                                      iterations=self.mask_dilate_iterations)
             masks.append(Image.fromarray(dilated_mask * 255))
         return masks
 
