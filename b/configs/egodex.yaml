@@ -1,0 +1,30 @@
+# EgoDex dataset configuration
+debug: false
+verbose: false
+skip_existing: false
+n_processes: 1
+data_root_dir: "/mnt/r/DATA/EgoDex/test_phantom"
+processed_data_root_dir: "/mnt/r/DATA/EgoDex/test_phantom_processed"
+demo_name: ""
+
+# Processing settings
+mode: ["bbox"]
+demo_num: null
+
+# Additional settings
+debug_cameras: []
+
+# EgoDex-specific settings
+input_resolution: 1080
+output_resolution: 1080
+robot: "Kinova3"
+gripper: "Robotiq85"
+square: false
+epic: true
+bimanual_setup: "shoulders"
+target_hand: "both"
+constrained_hand: false
+depth_for_overlay: false
+render: false
+camera_intrinsics: "camera/camera_intrinsics_egodex.json"
+camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"

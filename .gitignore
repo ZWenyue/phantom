@@ -9,3 +9,9 @@ data/processed/*
 *.pth
 outputs/*
 phantom/outputs/*
+
+# epic data
+epic/
+
+# b data & binary files
+b/data/

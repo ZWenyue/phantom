@@ -49,6 +49,10 @@ git submodule update --init --recursive
 ```bash
 ./install.sh
 ```
+If the original installer fails (e.g. detectron2 build, numpy 2.x conflicts, or `gdown --fuzzy`), use the alternative script instead:
+```bash
+./install_robust.sh
+```
 
 3. Download the MANO hand models. To do so, go to the [MANO website](https://mano.is.tue.mpg.de/) and register to be able to download the models. Download the left and right hand models and move MANO_LEFT.pkl and MANO_RIGHT.pkl inside the `$ROOT_DIR/submodules/phantom-hamer/_DATA/data/mano/` folder.
 
