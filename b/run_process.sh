@@ -18,7 +18,8 @@ set -euo pipefail
 TASK="basic_pick_place"
 STEP="all"
 NUM_GPUS=4
-CPU_WORKERS=16
+NUM_WORKERS=""  # defaults to NUM_GPUS if not set
+CPU_WORKERS=64
 DATA_ROOT="/mnt/r/DATA/EgoDex/test_phantom"
 PROCESSED_ROOT="/mnt/r/DATA/EgoDex/test_phantom_processed"
 DRY_RUN=false
@@ -29,6 +30,7 @@ while [[ $# -gt 0 ]]; do
         --task)          TASK="$2";                 shift 2 ;;
         --step)          STEP="$2";                 shift 2 ;;
         --gpus)          NUM_GPUS="$2";             shift 2 ;;
+        --workers)       NUM_WORKERS="$2";          shift 2 ;;
         --cpu-workers)   CPU_WORKERS="$2";          shift 2 ;;
         --data-root)     DATA_ROOT="$2";            shift 2 ;;
         --processed-root) PROCESSED_ROOT="$2";      shift 2 ;;
@@ -78,33 +80,45 @@ step_cpu() {
 }
 
 # ── step: GPU-parallel (hand2d, arm_segmentation, hand_inpaint, robot_inpaint)
+# --workers controls parallelism (defaults to NUM_GPUS); GPUs assigned round-robin
+default_workers() {
+    case "$1" in
+        robot_inpaint) echo 32 ;;
+        *)             echo "$NUM_GPUS" ;;
+    esac
+}
+
 step_gpu() {
     local mode="$1"
     local n_episodes
     n_episodes=$(count_episodes)
+    local n_workers=${NUM_WORKERS:-$(default_workers "$mode")}
 
     if [[ "$n_episodes" -eq 0 ]]; then
         echo "Error: no episodes found for ${DEMO_NAME}"
         return 1
     fi
 
-    echo "═══ ${mode^^} (GPU×${NUM_GPUS}, ${n_episodes} episodes) ═══"
+    echo "═══ ${mode^^} (${n_workers} workers × ${NUM_GPUS} GPUs, ${n_episodes} episodes) ═══"
 
-    local per_gpu=$(( (n_episodes + NUM_GPUS - 1) / NUM_GPUS ))
-    local pids=()
+    local per_worker=$(( (n_episodes + n_workers - 1) / n_workers ))
+    pids=()
+    _w_starts=()
+    _w_ends=()
 
     cd "$PHANTOM_DIR"
-    for gpu_id in $(seq 0 $((NUM_GPUS - 1))); do
-        local start=$((gpu_id * per_gpu))
+    for wid in $(seq 0 $((n_workers - 1))); do
+        local start=$((wid * per_worker))
         if [[ $start -ge $n_episodes ]]; then
             break
         fi
-        local end=$(( (gpu_id + 1) * per_gpu - 1 ))
+        local end=$(( (wid + 1) * per_worker - 1 ))
         if [[ $end -ge $n_episodes ]]; then
             end=$((n_episodes - 1))
         fi
+        local gpu_id=$((wid % NUM_GPUS))
 
-        local log_file="/tmp/phantom_${DEMO_NAME}_${mode}_gpu${gpu_id}.log"
+        local log_file="/tmp/phantom_${DEMO_NAME}_${mode}_w${wid}.log"
 
         (
             for demo_idx in $(seq "$start" "$end"); do
@@ -121,12 +135,14 @@ step_gpu() {
             done
         ) > "$log_file" 2>&1 &
         pids+=($!)
-        echo "  GPU ${gpu_id}: episodes ${start}-${end} (pid $!) → ${log_file}"
+        _w_starts+=($start)
+        _w_ends+=($end)
+        echo "  W${wid}(GPU${gpu_id}): episodes ${start}-${end} (pid $!) → ${log_file}"
     done
 
     if ! $DRY_RUN; then
-        echo "  Waiting for ${#pids[@]} workers..."
-        # Poll progress every 15s until all workers finish
+        local actual_workers=${#pids[@]}
+        echo "  Waiting for ${actual_workers} workers..."
         while true; do
             local all_done=true
             for pid in "${pids[@]}"; do
@@ -137,18 +153,16 @@ step_gpu() {
             done
             if $all_done; then break; fi
 
-            # Print per-GPU progress: count completed episodes by "100%|" markers
-            local status=""
-            for gpu_id in $(seq 0 $((${#pids[@]} - 1))); do
-                local lf="/tmp/phantom_${DEMO_NAME}_${mode}_gpu${gpu_id}.log"
-                local done_ep=$(grep -c '100%|██████████|' "$lf" 2>/dev/null || echo 0)
-                local gpu_start=$((gpu_id * per_gpu))
-                local gpu_end=$(( (gpu_id + 1) * per_gpu - 1 ))
-                if [[ $gpu_end -ge $n_episodes ]]; then gpu_end=$((n_episodes - 1)); fi
-                local gpu_total=$(( gpu_end - gpu_start + 1 ))
-                status+="GPU${gpu_id}:${done_ep}/${gpu_total} "
+            local status="" total_done=0 total_all=0
+            for wid in $(seq 0 $((actual_workers - 1))); do
+                local lf="/tmp/phantom_${DEMO_NAME}_${mode}_w${wid}.log"
+                local done_ep=0
+                done_ep=$(grep -c '100%|██████████|' "$lf" 2>/dev/null) || true
+                local w_total=$(( _w_ends[wid] - _w_starts[wid] + 1 ))
+                total_done=$((total_done + done_ep))
+                total_all=$((total_all + w_total))
             done
-            echo "  [$(date +%H:%M:%S)] ${status}"
+            echo "  [$(date +%H:%M:%S)] ${total_done}/${total_all} episodes done"
             sleep 15
         done
 
@@ -157,7 +171,7 @@ step_gpu() {
             wait "$pid" || ((failed++)) || true
         done
         if [[ $failed -gt 0 ]]; then
-            echo "  WARNING: ${failed} worker(s) had errors — check /tmp/phantom_${DEMO_NAME}_${mode}_gpu*.log"
+            echo "  WARNING: ${failed} worker(s) had errors — check /tmp/phantom_${DEMO_NAME}_${mode}_w*.log"
         else
             echo "  Done: ${mode}"
         fi

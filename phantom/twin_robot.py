@@ -355,10 +355,14 @@ class TwinRobot:
         action = self.get_action_from_ee_pose(ee_pos, ee_ori, gripper_action, use_base_offset=True)
         
         # Execute action for specified number of steps
-        for _ in range(n_steps):
-            obs, _, _, _ = self.env.step(action)
-            if self.render:
-                self.env.render()
+        # Only collect observations (which triggers rendering) on the last step
+        for i in range(n_steps):
+            if i < n_steps - 1:
+                self.env.step_physics_only(action)
+            else:
+                obs, _, _, _ = self.env.step(action)
+                if self.render:
+                    self.env.render()
         return obs
 
     def get_image(self, obs: dict) -> np.ndarray:

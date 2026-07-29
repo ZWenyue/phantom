@@ -447,10 +447,14 @@ class TwinBimanualRobot:
             action = np.concatenate([action_0, np.array(gripper_action[0]).reshape(1,), action_1, np.array(gripper_action[1]).reshape(1,)])
 
         # Execute action for specified number of steps
-        for _ in range(n_steps):
-            obs, _, _, _ = self.env.step(action)
-            if self.render:
-                self.env.render()
+        # Only collect observations (which triggers rendering) on the last step
+        for i in range(n_steps):
+            if i < n_steps - 1:
+                self.env.step_physics_only(action)
+            else:
+                obs, _, _, _ = self.env.step(action)
+                if self.render:
+                    self.env.render()
         return obs
     
     def get_proprioception(self, obs: dict) -> np.ndarray:
