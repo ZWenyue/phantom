@@ -154,38 +154,58 @@ class DetectorSam2:
     def segment_video_from_mask(self, video_dir: str, mask: np.ndarray, frame_idx: int, reverse=False):
         """
         Propagate a segmentation mask through video frames (forward or backward).
-        
+
         Parameters:
             video_dir: Directory containing video frames
             mask: Initial segmentation mask to propagate
             frame_idx: Frame index where the mask is defined
             reverse: If True, propagate backward in time; if False, propagate forward
-            
+
         Returns:
             frame_indices: List of frame indices where masks were generated
             video_segments: Dictionary mapping frame indices to segmentation masks
+        """
+        return self.segment_video_from_masks(video_dir, [(mask, frame_idx)], reverse=reverse)
+
+    def segment_video_from_masks(self, video_dir: str, mask_frame_pairs: list, reverse=False):
+        """
+        Propagate multiple segmentation masks through video frames.
+
+        Each (mask, frame_idx) pair is added as a conditioning signal on the
+        same object before propagation starts. This allows initializing SAM2
+        with masks from different frames (e.g. left and right hand) in a
+        single forward or reverse pass.
+
+        Parameters:
+            video_dir: Directory containing video frames
+            mask_frame_pairs: List of (mask, frame_idx) tuples
+            reverse: If True, propagate backward in time
+
+        Returns:
+            frame_indices: Sorted list of frame indices
+            video_segments: Dict mapping frame index to {obj_id: mask}
         """
         with torch.inference_mode(), torch.autocast(self.device, dtype=torch.bfloat16):
             state = self.video_predictor.init_state(video_path=video_dir)
             self.video_predictor.reset_state(state)
 
-            self.video_predictor.add_new_mask(state, frame_idx, 0, mask)
+            for mask, frame_idx in mask_frame_pairs:
+                self.video_predictor.add_new_mask(state, frame_idx, 0, mask)
 
             video_segments = {}
-            mask_prob = {}
             for (
                 out_frame_idx,
                 out_obj_ids,
                 out_mask_logits,
             ) in self.video_predictor.propagate_in_video(state, reverse=reverse):
-                mask_prob[out_frame_idx] = torch.mean(torch.sigmoid(out_mask_logits))
                 video_segments[out_frame_idx] = {
                     out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
                     for i, out_obj_id in enumerate(out_obj_ids)
                 }
 
-        frame_indices = list(video_segments.keys())
-        frame_indices.sort()
+        torch.cuda.empty_cache()
+
+        frame_indices = sorted(video_segments.keys())
         return frame_indices, video_segments
 
     @staticmethod

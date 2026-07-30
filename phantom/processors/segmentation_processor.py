@@ -220,8 +220,8 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         """
         Process a single video demonstration to generate combined hand + arm segmentation masks.
 
-        Uses Detectron2 instance segmentation (pred_masks) to detect person regions
-        per frame, then filters by hand keypoint containment to keep only arm masks.
+        Uses Detectron2 pred_masks to find the best initialization frame per hand,
+        then SAM2 temporal propagation to extend that mask across all frames.
 
         Args:
             data_sub_folder: Path to the subfolder containing the demo data
@@ -235,154 +235,155 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         if hamer_data is None:
             hamer_data = self._load_hamer_data(paths)
 
-        masks = self._get_detectron_arm_masks(imgs_rgb, bbox_data, hamer_data)
+        paths._setup_original_images()
+
+        masks = self._get_sam_arm_masks(imgs_rgb, bbox_data, hamer_data, paths)
 
         sam_imgs = self._create_visualization(imgs_rgb, masks)
         self._validate_output_consistency(imgs_rgb, masks, sam_imgs)
         self._save_results(paths, masks, sam_imgs)
 
-    def _get_detectron_arm_masks(
+    def _get_sam_arm_masks(
         self,
         imgs_rgb: np.ndarray,
         bbox_data: Dict[str, np.ndarray],
         hamer_data: Dict[str, HandSequence],
-        detect_resolution: int = 480,
+        paths,
+        top_k_candidates: int = 20,
     ) -> np.ndarray:
         """
-        Generate arm masks using Detectron2 instance segmentation.
+        Generate arm masks using Detectron2 for initialization + SAM2 temporal propagation.
 
-        Frames are downscaled to detect_resolution before running Detectron2
-        for faster and more robust detection. Masks are generated at the
-        downscaled resolution, then resized back to the original size.
+        For each hand:
+          1. Find the best init frame where Detectron2 detects a person mask
+             containing that hand's keypoints (highest score among top-K candidates).
+          2. Use that Detectron2 pred_mask as SAM2's mask prompt.
+          3. SAM2 propagates the mask forward and backward through all frames.
 
         Args:
             imgs_rgb: RGB video frames, shape (N, H, W, 3)
             bbox_data: Bounding box data with hand detection flags
             hamer_data: Hand pose data with 2D keypoints
-            detect_resolution: Max dimension for Detectron2 input
+            paths: Paths object (needed for JPEG frame directory)
+            top_k_candidates: Number of candidate frames to run Detectron2 on
 
         Returns:
             Boolean mask array, shape (N, H, W)
         """
         n_frames = len(imgs_rgb)
         h, w = imgs_rgb[0].shape[:2]
+        combined_masks = np.zeros((n_frames, h, w), dtype=np.bool_)
 
-        # Compute downscale factor
-        scale = min(detect_resolution / max(h, w), 1.0)
-        det_h, det_w = int(h * scale), int(w * scale)
-
-        masks_small = np.zeros((n_frames, det_h, det_w), dtype=np.bool_)
-
-        # Scale keypoints to detection resolution
-        kpts_per_frame = self._collect_hand_keypoints(bbox_data, hamer_data)
-        kpts_per_frame_scaled = [kpts * scale if len(kpts) > 0 else kpts for kpts in kpts_per_frame]
-
-        per_hand_kpts = self._collect_per_hand_keypoints(bbox_data, hamer_data)
-        per_hand_kpts_scaled = [
-            [kpts * scale for kpts in hands] for hands in per_hand_kpts
-        ]
-
-        for idx in tqdm(range(n_frames), desc="Detectron2 arm segmentation"):
-            frame_kpts = kpts_per_frame_scaled[idx]
-            img_small = cv2.resize(imgs_rgb[idx], (det_w, det_h))
-
-            thresh = 0.1 if len(frame_kpts) > 0 else 0.3
-            pred_masks, _, _ = self.detectron_detector.get_person_masks(img_small, score_thresh=thresh)
-            if len(pred_masks) == 0:
-                self._add_convex_hull_masks(masks_small, idx, per_hand_kpts_scaled[idx], det_h, det_w)
+        for side in hamer_data:
+            detected_key = f"{side}_hand_detected"
+            dist_key = f"{side}_bbox_min_dist_to_edge"
+            if detected_key not in bbox_data:
                 continue
 
-            if len(frame_kpts) == 0:
-                for m in pred_masks:
-                    masks_small[idx] |= m
-            else:
-                matched_any = False
-                for m in pred_masks:
-                    if self._mask_contains_any_keypoint(m, frame_kpts):
-                        masks_small[idx] |= m
-                        matched_any = True
-                if not matched_any:
-                    for m in pred_masks:
-                        masks_small[idx] |= m
+            hand_detected = bbox_data[detected_key]
+            kpts_2d = hamer_data[side].kpts_2d
+            bbox_min_dist = bbox_data[dist_key]
 
-            for hand_kpts in per_hand_kpts_scaled[idx]:
-                covered = any(
-                    self._mask_contains_any_keypoint(m, hand_kpts)
-                    for m in pred_masks
-                )
-                if not covered:
-                    self._add_convex_hull_mask(masks_small[idx], hand_kpts, det_h, det_w)
+            if not hand_detected.any():
+                logger.info(f"No {side} hand detected in any frame, skipping")
+                continue
 
-        self._temporal_fill(masks_small)
+            init_idx, init_mask = self._find_best_init_frame(
+                imgs_rgb, hand_detected, kpts_2d, bbox_min_dist, top_k_candidates
+            )
 
-        # Resize masks back to original resolution
-        masks = np.zeros((n_frames, h, w), dtype=np.bool_)
-        for idx in range(n_frames):
-            masks[idx] = cv2.resize(
-                masks_small[idx].astype(np.uint8), (w, h),
-                interpolation=cv2.INTER_NEAREST,
-            ).astype(np.bool_)
+            if init_mask is None:
+                logger.warning(f"Could not find init frame for {side} hand, skipping")
+                continue
 
-        return masks
+            logger.info(f"{side} hand: init frame {init_idx}, mask pixels {init_mask.sum()}")
 
-    @staticmethod
-    def _temporal_fill(masks: np.ndarray) -> None:
-        """Fill empty frames by copying the mask from the nearest non-empty frame."""
-        has_mask = np.array([masks[i].any() for i in range(len(masks))])
-        if has_mask.all() or not has_mask.any():
-            return
+            masks_forward = self._run_sam_from_mask(paths, init_mask, init_idx, reverse=False)
+            masks_reverse = self._run_sam_from_mask(paths, init_mask, init_idx, reverse=True)
 
-        empty_indices = np.where(~has_mask)[0]
-        filled_indices = np.where(has_mask)[0]
+            for idx in masks_forward:
+                combined_masks[idx] |= masks_forward[idx][0]
+            for idx in masks_reverse:
+                combined_masks[idx] |= masks_reverse[idx][0]
 
-        for idx in empty_indices:
-            nearest = filled_indices[np.argmin(np.abs(filled_indices - idx))]
-            masks[idx] = masks[nearest]
+        return combined_masks
 
-        logger.info(f"Temporal fill: copied masks for {len(empty_indices)} empty frames")
-
-    def _collect_per_hand_keypoints(
+    def _find_best_init_frame(
         self,
-        bbox_data: Dict[str, np.ndarray],
-        hamer_data: Dict[str, HandSequence],
-    ) -> List[List[np.ndarray]]:
-        """Collect keypoints separated by hand, for convex hull generation.
+        imgs_rgb: np.ndarray,
+        hand_detected: np.ndarray,
+        kpts_2d: np.ndarray,
+        bbox_min_dist: np.ndarray,
+        top_k: int = 20,
+    ) -> Tuple[Optional[int], Optional[np.ndarray]]:
+        """
+        Find the best frame to initialize SAM2 with a Detectron2 mask.
+
+        Selects top-K candidate frames (by bbox_min_dist_to_edge, hand detected,
+        keypoints non-zero), runs Detectron2 on each, and picks the one with
+        the highest-scoring person mask that contains hand keypoints.
 
         Returns:
-            List (per frame) of lists (per hand) of (21, 2) keypoint arrays.
+            (frame_index, 2D boolean mask) or (None, None) if no valid frame found.
         """
-        n_frames = len(bbox_data["left_hand_detected"]) if "left_hand_detected" in bbox_data else len(bbox_data["right_hand_detected"])
-        result = []
-        for idx in range(n_frames):
-            hands = []
-            for side in hamer_data:
-                detected_key = f"{side}_hand_detected"
-                if detected_key in bbox_data and bbox_data[detected_key][idx]:
-                    kpts = hamer_data[side].kpts_2d[idx]
-                    if not np.allclose(kpts, 0):
-                        hands.append(kpts)
-            result.append(hands)
+        candidates = []
+        for idx in range(len(imgs_rgb)):
+            if not hand_detected[idx]:
+                continue
+            if np.allclose(kpts_2d[idx], 0):
+                continue
+            candidates.append(idx)
+
+        if not candidates:
+            return None, None
+
+        candidates.sort(key=lambda i: bbox_min_dist[i], reverse=True)
+        candidates = candidates[:top_k]
+
+        best_idx = None
+        best_mask = None
+        best_score = -1.0
+
+        for idx in candidates:
+            pred_masks, _, pred_scores = self.detectron_detector.get_person_masks(
+                imgs_rgb[idx], score_thresh=0.1
+            )
+            if len(pred_masks) == 0:
+                continue
+
+            kpts = kpts_2d[idx]
+            for i, m in enumerate(pred_masks):
+                if self._mask_contains_any_keypoint(m, kpts) and pred_scores[i] > best_score:
+                    best_score = pred_scores[i]
+                    best_idx = idx
+                    best_mask = m
+
+        return best_idx, best_mask
+
+    def _run_sam_from_mask(
+        self,
+        paths,
+        mask: np.ndarray,
+        frame_idx: int,
+        reverse: bool,
+    ) -> Dict[int, np.ndarray]:
+        """
+        Run SAM2 temporal propagation from a mask prompt.
+
+        Returns:
+            Dict mapping frame index to mask array of shape (1, H, W).
+        """
+        _, video_segments = self.detector_sam.segment_video_from_mask(
+            str(paths.original_images_folder),
+            mask,
+            frame_idx,
+            reverse=reverse,
+        )
+        result = {}
+        for fidx, obj_dict in video_segments.items():
+            for obj_id, seg_mask in obj_dict.items():
+                result[fidx] = seg_mask
         return result
-
-    @staticmethod
-    def _add_convex_hull_masks(masks: np.ndarray, idx: int, hand_kpts_list: List[np.ndarray], h: int, w: int) -> None:
-        """Add convex hull masks for all hands when no Detectron2 detection exists."""
-        for hand_kpts in hand_kpts_list:
-            ArmSegmentationProcessor._add_convex_hull_mask(masks[idx], hand_kpts, h, w)
-
-    @staticmethod
-    def _add_convex_hull_mask(frame_mask: np.ndarray, keypoints: np.ndarray, h: int, w: int, dilate_px: int = 60) -> None:
-        """Draw a dilated convex hull of hand keypoints onto the frame mask."""
-        pts = keypoints[:, :2].astype(np.float32)
-        pts[:, 0] = np.clip(pts[:, 0], 0, w - 1)
-        pts[:, 1] = np.clip(pts[:, 1], 0, h - 1)
-        hull = cv2.convexHull(pts.astype(np.int32))
-        hull_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(hull_mask, hull, 1)
-        if dilate_px > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_px * 2 + 1, dilate_px * 2 + 1))
-            hull_mask = cv2.dilate(hull_mask, kernel, iterations=1)
-        frame_mask |= hull_mask.astype(np.bool_)
 
     def _collect_hand_keypoints(
         self,

@@ -273,3 +273,88 @@ for each frame:
 | 有 mask 帧数 | 449/539 (83%) | 539/539 (100%) |
 | 平均 mask 覆盖率 | 12.16% | 13.67% |
 | 覆盖率提升 >1% 的帧 | — | 121 帧 |
+
+---
+
+## 改动四：Detectron2 + SAM2 混合方案
+
+### 问题
+
+改动三（纯 Detectron2 逐帧检测）的两个局限：
+
+1. **逐帧独立检测无时序信息** — 部分帧漏检需要 temporal fill（简单复制邻近帧 mask），不准确
+2. **膨胀过大覆盖手持物体** — 为弥补 mask 边界不够，`mask_dilate_iterations` 需要设到 8-12，导致手上拿的东西（三明治等）也被 inpaint 涂掉
+
+原版代码用 SAM2 时序传播能做到 100% 帧覆盖且 mask 精确，但用手部关键点初始化 → 只分割手掌皮肤，衣袖不覆盖。
+
+### 方案
+
+结合两者优势：用 Detectron2 的 `pred_mask`（覆盖整条手臂含衣袖）作为 SAM2 的 mask prompt 初始化，让 SAM2 把这个 arm-level mask 时序传播到全部帧。
+
+### 改动
+
+#### 1. `phantom/processors/segmentation_processor.py`
+
+重写 `ArmSegmentationProcessor.process_one_demo`，新流程：
+
+```
+load video → extract JPEG frames (SAM2 需要) →
+for each hand (left, right):
+    1. 在 top-K 候选帧（按 bbox_min_dist 排序）上跑 Detectron2
+    2. 找到最佳初始帧（score 最高 + mask 包含该手关键点）
+    3. 用该帧的 Detectron2 pred_mask 作为 SAM2 mask prompt
+    4. SAM2 正向传播 + 反向传播
+    5. 合并双向 masks
+→ 左右手 mask OR 合并 → masks_arm.npy
+```
+
+新增方法：
+- `_get_sam_arm_masks()` — 主方法，按手分别处理
+- `_find_best_init_frame()` — 在候选帧上跑 Detectron2 选最佳帧
+- `_run_sam_from_mask()` — 调用 `segment_video_from_mask` 的封装
+
+删除不再需要的方法：`_get_detectron_arm_masks`, `_temporal_fill`, `_add_convex_hull_mask`, `_add_convex_hull_masks`, `_collect_per_hand_keypoints`
+
+#### 2. `phantom/detectors/detector_sam2.py`
+
+`segment_video_from_mask` 添加 `torch.cuda.empty_cache()` 防止 GPU OOM。
+
+#### 3. `b/configs/egodex.yaml`
+
+`mask_dilate_iterations` 恢复为 3（SAM2 mask 精确，不需要大膨胀）。
+
+### 预期效果
+
+| | Detectron2-only（改动三） | Detectron2 + SAM2（改动四） |
+|---|---|---|
+| 帧覆盖率 | ~90% + temporal fill | 100%（SAM2 传播） |
+| mask 覆盖 | 手臂+衣袖 | 手臂+衣袖 |
+| 时序一致性 | 无 | 有 |
+| 膨胀需求 | iterations=8-12 | iterations=3 |
+| 手持物体 | 被过度覆盖 | 精确保留 |
+| 速度 | ~2.5 min/ep | ~5-8 min/ep |
+
+### 实测结果
+
+Episode 0（539 帧）验证通过：SAM2 4 轮传播（左手 forward/reverse + 右手 forward/reverse），mask 精确覆盖手臂+衣袖，手持物体不被过度覆盖。
+
+#### 2 轮传播尝试（已放弃）
+
+尝试将左右手 init mask 合并，只跑 2 轮 SAM2 传播（forward + reverse）。实现：`detector_sam2.py` 新增 `segment_video_from_masks()` 方法，支持在同一次 propagation 前用 `add_new_mask` 添加多个 conditioning mask。
+
+结果：效果不如 4 轮。原因是左右手的最佳初始帧通常不同，合在一起传播时 SAM2 对两条手臂的跟踪质量下降。已恢复为每只手独立跑 forward + reverse（4 轮）。
+
+`segment_video_from_masks()` 保留在代码中备用。
+
+#### 新增/修改的方法总结
+
+**`phantom/detectors/detector_sam2.py`：**
+- `segment_video_from_mask()` — 添加 `torch.cuda.empty_cache()`，内部委托给 `segment_video_from_masks`
+- `segment_video_from_masks()` — 新增，支持多个 `(mask, frame_idx)` 对初始化
+
+**`phantom/processors/segmentation_processor.py`：**
+- `_get_sam_arm_masks()` — 新增，替代 `_get_detectron_arm_masks`
+- `_find_best_init_frame()` — 新增，在 top-K 候选帧上跑 Detectron2 选最佳初始帧
+- `_run_sam_from_mask()` — 新增，封装 `segment_video_from_mask` 调用
+- 删除：`_get_detectron_arm_masks`, `_temporal_fill`, `_add_convex_hull_mask`, `_add_convex_hull_masks`, `_collect_per_hand_keypoints`
+- 保留：`_collect_hand_keypoints`, `_mask_contains_any_keypoint`（初始帧选择用）
