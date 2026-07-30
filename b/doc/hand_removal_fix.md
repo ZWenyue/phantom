@@ -156,3 +156,78 @@ bash b/run_reinpaint.sh --dry-run                    # 只打印不执行
 | mask 覆盖帧数 | 471/471（全错） | 412/471（正确目标） |
 | inpaint 质量 | 棋盘格伪影 | 干净，无伪影 |
 | 人手去除 | 手完全保留 | 大部分帧手被正确去除 |
+
+---
+
+## 改动二：用 Detectron2 pred_masks 替代 SAM2 做 arm segmentation
+
+### 问题
+
+上面的改动修复了 SAM2 分割错误对象的问题，但 SAM2 用 HaMeR 的 21 个手部关键点初始化，只能分割到**手掌皮肤区域**，无法分割穿着衣袖的手臂。在第一人称视角下，inpaint 后手被去掉了，但灰色衣袖/手臂仍然可见。
+
+另外 SAM2 方案存在严重的性能问题：
+- 每个 episode 需要提取全部视频帧为 JPEG（`convert_video_to_images`），写到 `/mnt/r/`
+- SAM2 `init_state` 再把所有 JPEG 读回来
+- 双手 × 双向 = 4 轮 SAM2 propagation
+- 首个 episode 约 12 分钟（6 worker 并发时）
+
+### 根因
+
+Detectron2 (`cascade_mask_rcnn_vitdet_h`) 本身就是 Mask R-CNN，输出中包含 `pred_masks`（实例分割 mask），但原代码只提取了 `pred_bboxes`，完全没有使用 mask。在第一人称视角下，Detectron2 检测到的 "person" 实例就是手臂+手，其 mask 正好覆盖整条手臂（含衣袖）。
+
+### 改动
+
+#### 1. `phantom/detectors/detector_detectron2.py`
+
+新增 `get_person_masks` 方法，提取 `pred_masks`：
+
+```python
+def get_person_masks(self, img):
+    det_out = self.detectron2(img)
+    det_instances = det_out["instances"]
+    valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
+    pred_masks = det_instances.pred_masks[valid_idx].cpu().numpy()  # (K, H, W) bool
+    pred_bboxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
+    pred_scores = det_instances.scores[valid_idx].cpu().numpy()
+    return pred_masks, pred_bboxes, pred_scores
+```
+
+#### 2. `phantom/processors/segmentation_processor.py`
+
+重写 `ArmSegmentationProcessor.process_one_demo`，用 Detectron2 逐帧分割替代 SAM2：
+
+**新流程：**
+```
+load video → load HaMeR keypoints →
+for each frame:
+    Detectron2 → person masks →
+    保留包含手部关键点的 mask →
+    OR 合并
+→ save masks_arm.npy
+```
+
+**关键变化：**
+- 不再调用 `_setup_original_images()`（不需要提取 JPEG）
+- 不再调用 `get_detectron_bboxes()`（不需要 bbox 匹配）
+- 不再使用 SAM2（不需要 `_run_sam_segmentation`、`_filter_mask_by_keypoints`）
+- 新增 `_get_detectron_arm_masks()`：逐帧运行 Detectron2，用 HaMeR 关键点匹配 person mask
+- 新增 `_collect_hand_keypoints()`：收集每帧的有效手部关键点
+- 新增 `_mask_contains_any_keypoint()`：检查 mask 是否包含关键点
+
+**匹配逻辑：**
+- 有手部关键点的帧：只保留包含关键点的 person mask
+- 无关键点的帧（手未检测到）：保留所有 person mask（fallback，手臂大概率仍可见）
+
+**删除的方法：** `_process_single_arm`, `_process_bimanual`, `_process_hand_data`, `_run_sam_segmentation`, `_select_init_frame`, `_filter_mask_by_keypoints`, `get_detectron_bboxes` 及其所有辅助方法。
+
+**未修改：** `_save_results`, `_create_visualization`, `_validate_output_consistency`，输出格式 `masks_arm.npy` 不变，下游 `handinpaint_processor.py` 和 `robotinpaint_processor.py` 无需改动。
+
+### 性能对比
+
+| | SAM2 方案 | Detectron2 方案 |
+|---|---|---|
+| 首个 episode | ~12 min（含模型加载+I/O竞争） | ~3.5 min |
+| 后续 episode | ~1.5 min | ~3.5 min |
+| JPEG I/O | 539帧×2方向 写+读×4轮 | 无 |
+| GPU 操作 | 4轮 SAM2 propagation | 逐帧 Detectron2（~0.38s/帧） |
+| mask 覆盖 | 仅手掌皮肤 | 手臂+手（含衣袖） |

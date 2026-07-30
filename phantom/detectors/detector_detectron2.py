@@ -82,7 +82,17 @@ class DetectorDetectron2:
                 cv2.waitKey(1)
 
         return pred_bboxes, pred_scores
-    
+
+    def get_person_masks(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Get instance segmentation masks for all detected persons."""
+        det_out = self.detectron2(img)
+        det_instances = det_out["instances"]
+        valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
+        pred_masks = det_instances.pred_masks[valid_idx].cpu().numpy()
+        pred_bboxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
+        pred_scores = det_instances.scores[valid_idx].cpu().numpy()
+        return pred_masks, pred_bboxes, pred_scores
+
     def get_best_bbox(self, img: np.ndarray, visualize: bool=False, 
                       visualize_wait: bool=True) -> Tuple[np.ndarray, float]:
         """ Get the best bounding box and score for the detected hand in the image """

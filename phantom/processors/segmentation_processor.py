@@ -19,7 +19,6 @@ import os
 import logging
 import shutil
 from tqdm import tqdm
-import cv2
 import numpy as np
 import mediapy as media
 import argparse
@@ -29,14 +28,12 @@ from phantom.processors.paths import Paths
 from phantom.processors.base_processor import BaseProcessor
 from phantom.detectors.detector_sam2 import DetectorSam2
 from phantom.detectors.detector_detectron2 import DetectorDetectron2
-from phantom.utils.bbox_utils import get_overlap_score
 from phantom.processors.phantom_data import HandSequence
 
 logger = logging.getLogger(__name__)
 
 # Configuration constants for segmentation processing
 DEFAULT_FPS = 10
-DEFAULT_OVERLAP_THRESHOLD = 0.5
 DEFAULT_CODEC = "ffv1"
 ANNOTATION_CODEC = "h264"
 
@@ -222,166 +219,106 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         """
         Process a single video demonstration to generate combined hand + arm segmentation masks.
 
+        Uses Detectron2 instance segmentation (pred_masks) to detect person regions
+        per frame, then filters by hand keypoint containment to keep only arm masks.
+
         Args:
             data_sub_folder: Path to the subfolder containing the demo data
             hamer_data: Optional pre-loaded hand pose data for segmentation guidance
-
-        Raises:
-            FileNotFoundError: If required input files are not found
-            ValueError: If video frames or bounding boxes are invalid
         """
-        # Setup and load all required data
-        save_folder, paths, imgs_rgb, bbox_data, det_bbox_data, hamer_data = self._setup_processing(
-            data_sub_folder, hamer_data
-        )
+        save_folder = self.get_save_folder(data_sub_folder)
+        paths = self.get_paths(save_folder)
 
-        # Process based on setup type
-        if self.bimanual_setup == "single_arm":
-            masks = self._process_single_arm(imgs_rgb, bbox_data, det_bbox_data, hamer_data, paths)
-        elif self.bimanual_setup == "shoulders":
-            masks = self._process_bimanual(imgs_rgb, bbox_data, det_bbox_data, hamer_data, paths)
-        else:
-            raise ValueError(f"Invalid bimanual setup: {self.bimanual_setup}")
+        imgs_rgb = self._load_video(paths.video_left)
+        bbox_data = self._load_bbox_data(paths.bbox_data)
+        if hamer_data is None:
+            hamer_data = self._load_hamer_data(paths)
 
-        # Create visualization and save results
+        masks = self._get_detectron_arm_masks(imgs_rgb, bbox_data, hamer_data)
+
         sam_imgs = self._create_visualization(imgs_rgb, masks)
         self._validate_output_consistency(imgs_rgb, masks, sam_imgs)
         self._save_results(paths, masks, sam_imgs)
 
-    def _setup_processing(
-        self, 
-        data_sub_folder: str, 
-        hamer_data: Optional[Dict[str, HandSequence]]
-    ) -> Tuple[str, Paths, np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, HandSequence]]:
-        """
-        Setup processing environment and load all required data.
-        
-        Args:
-            data_sub_folder: Path to the subfolder containing the demo data
-            hamer_data: Optional pre-loaded hand pose data
-            
-        Returns:
-            Tuple containing: (save_folder, paths, imgs_rgb, bbox_data, det_bbox_data, hamer_data)
-        """
-        save_folder = self.get_save_folder(data_sub_folder)
-        paths = self.get_paths(save_folder)
-        paths._setup_original_images()
-        paths._setup_original_images_reverse()
-
-        # Load and validate all input data
-        imgs_rgb = self._load_video(paths.video_left)
-        bbox_data = self._load_bbox_data(paths.bbox_data)
-        det_bbox_data = self.get_detectron_bboxes(imgs_rgb, bbox_data)
-        if hamer_data is None:
-            hamer_data = self._load_hamer_data(paths)
-            
-        return save_folder, paths, imgs_rgb, bbox_data, det_bbox_data, hamer_data
-
-    def _process_single_arm(
+    def _get_detectron_arm_masks(
         self,
         imgs_rgb: np.ndarray,
         bbox_data: Dict[str, np.ndarray],
-        det_bbox_data: Dict[str, np.ndarray],
         hamer_data: Dict[str, HandSequence],
-        paths: Paths
     ) -> np.ndarray:
         """
-        Process single arm setup (left or right hand only).
-        
-        Args:
-            imgs_rgb: RGB video frames
-            bbox_data: Bounding box detection data
-            det_bbox_data: Detectron2 refined bounding boxes
-            hamer_data: Hand pose estimation data
-            paths: Paths object for file management
-            
-        Returns:
-            Boolean segmentation masks
-        """
-        if self.target_hand == "left":
-            hand_data = self._process_hand_data(
-                imgs_rgb,
-                bbox_data["left_bboxes"],
-                bbox_data["left_bbox_min_dist_to_edge"],
-                bbox_data["left_hand_detected"],
-                det_bbox_data["left_det_bboxes"],
-                hamer_data["left"],
-                paths,
-                "left"
-            )
-            masks = hand_data["left_masks"].astype(np.bool_)
-        elif self.target_hand == "right":
-            hand_data = self._process_hand_data(
-                imgs_rgb,
-                bbox_data["right_bboxes"],
-                bbox_data["right_bbox_min_dist_to_edge"],
-                bbox_data["right_hand_detected"],
-                det_bbox_data["right_det_bboxes"],
-                hamer_data["right"],
-                paths,
-                "right"
-            )
-            masks = hand_data["right_masks"].astype(np.bool_)
-        else:
-            raise ValueError(f"Invalid target hand: {self.target_hand}")
-        
-        return masks.astype(np.bool_)
+        Generate arm masks using Detectron2 instance segmentation.
 
-    def _process_bimanual(
+        For each frame, runs Detectron2 to get person masks, then keeps only
+        masks that contain hand keypoints from HaMeR. When no keypoints are
+        available (hand not detected), all person masks are included as fallback.
+
+        Args:
+            imgs_rgb: RGB video frames, shape (N, H, W, 3)
+            bbox_data: Bounding box data with hand detection flags
+            hamer_data: Hand pose data with 2D keypoints
+
+        Returns:
+            Boolean mask array, shape (N, H, W)
+        """
+        n_frames = len(imgs_rgb)
+        h, w = imgs_rgb[0].shape[:2]
+        masks = np.zeros((n_frames, h, w), dtype=np.bool_)
+
+        kpts_per_frame = self._collect_hand_keypoints(bbox_data, hamer_data)
+
+        for idx in tqdm(range(n_frames), desc="Detectron2 arm segmentation"):
+            pred_masks, _, _ = self.detectron_detector.get_person_masks(imgs_rgb[idx])
+            if len(pred_masks) == 0:
+                continue
+
+            frame_kpts = kpts_per_frame[idx]
+            if len(frame_kpts) == 0:
+                for m in pred_masks:
+                    masks[idx] |= m
+            else:
+                for m in pred_masks:
+                    if self._mask_contains_any_keypoint(m, frame_kpts):
+                        masks[idx] |= m
+
+        return masks
+
+    def _collect_hand_keypoints(
         self,
-        imgs_rgb: np.ndarray,
         bbox_data: Dict[str, np.ndarray],
-        det_bbox_data: Dict[str, np.ndarray],
         hamer_data: Dict[str, HandSequence],
-        paths: Paths
-    ) -> np.ndarray:
+    ) -> List[np.ndarray]:
         """
-        Process bimanual setup (both hands combined).
-        
-        Args:
-            imgs_rgb: RGB video frames
-            bbox_data: Bounding box detection data
-            det_bbox_data: Detectron2 refined bounding boxes
-            hamer_data: Hand pose estimation data
-            paths: Paths object for file management
-            
+        Collect valid hand keypoints per frame from all available hands.
+
         Returns:
-            Combined boolean segmentation masks
+            List of arrays, one per frame. Each array has shape (K, 2) where K
+            is the number of valid keypoints (0 if none).
         """
-        # Process left hand with arm segmentation
-        left_data = self._process_hand_data(
-            imgs_rgb,
-            bbox_data["left_bboxes"],
-            bbox_data["left_bbox_min_dist_to_edge"],
-            bbox_data["left_hand_detected"],
-            det_bbox_data["left_det_bboxes"],
-            hamer_data["left"],
-            paths,
-            "left"
-        )
+        n_frames = len(bbox_data["left_hand_detected"]) if "left_hand_detected" in bbox_data else len(bbox_data["right_hand_detected"])
+        result = []
 
-        # Process right hand with arm segmentation
-        right_data = self._process_hand_data(
-            imgs_rgb,
-            bbox_data["right_bboxes"],
-            bbox_data["right_bbox_min_dist_to_edge"],
-            bbox_data["right_hand_detected"],
-            det_bbox_data["right_det_bboxes"],
-            hamer_data["right"],
-            paths,
-            "right"
-        )
+        for idx in range(n_frames):
+            pts = []
+            for side in hamer_data:
+                detected_key = f"{side}_hand_detected"
+                if detected_key in bbox_data and bbox_data[detected_key][idx]:
+                    kpts = hamer_data[side].kpts_2d[idx]
+                    if not np.allclose(kpts, 0):
+                        pts.append(kpts)
+            result.append(np.concatenate(pts, axis=0) if pts else np.empty((0, 2)))
 
-        # Convert to boolean masks and combine
-        left_masks = left_data["left_masks"].astype(np.bool_)
-        right_masks = right_data["right_masks"].astype(np.bool_)
-        
-        # Generate combined video masks by taking the union of left and right masks
-        masks = np.zeros((len(imgs_rgb), imgs_rgb[0].shape[0], imgs_rgb[0].shape[1]))
-        for idx in range(len(imgs_rgb)):
-            masks[idx] = left_masks[idx] | right_masks[idx]
-        
-        return masks.astype(np.bool_)
+        return result
+
+    @staticmethod
+    def _mask_contains_any_keypoint(mask: np.ndarray, keypoints: np.ndarray) -> bool:
+        """Check if any keypoint falls inside the mask."""
+        h, w = mask.shape[-2:]
+        for kpt in keypoints:
+            x, y = int(round(kpt[0])), int(round(kpt[1]))
+            if 0 <= y < h and 0 <= x < w and mask[..., y, x]:
+                return True
+        return False
 
     def _create_visualization(self, imgs_rgb: np.ndarray, masks: np.ndarray) -> np.ndarray:
         """
@@ -422,363 +359,6 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         assert len(sam_imgs) == len(imgs_rgb), "Visualization length doesn't match input"
         assert len(masks) == len(imgs_rgb), "Masks length doesn't match input"
 
-
-    def _process_hand_data(
-        self,
-        imgs_rgb: np.ndarray,
-        bboxes: np.ndarray,
-        bbox_min_dist: np.ndarray,
-        hand_detected: np.ndarray,
-        det_bboxes: np.ndarray,
-        hamer_data: HandSequence,
-        paths: Paths,
-        hand_side: str
-    ) -> Dict[str, np.ndarray]:
-        """
-        Process segmentation data for a single hand (left or right) with arm inclusion.
-
-        Args:
-            imgs_rgb: RGB video frames
-            bboxes: Hand bounding boxes from detection stage
-            bbox_min_dist: Minimum distances to image edges (quality metric)
-            hand_detected: Boolean flags indicating valid hand detections
-            det_bboxes: Refined bounding boxes from Detectron2
-            hamer_data: Hand pose data for segmentation guidance
-            paths: Paths object for file management
-            hand_side: "left" or "right" specifying which hand to process
-
-        Returns:
-            Dictionary containing segmentation masks and visualization images
-        """
-        # Handle cases with no valid detections
-        if not hand_detected.any() or max(bbox_min_dist) == 0:
-            return {
-                f"{hand_side}_masks": np.zeros((len(imgs_rgb), imgs_rgb[0].shape[0], imgs_rgb[0].shape[1])),
-                f"{hand_side}_sam_imgs": np.zeros((len(imgs_rgb), imgs_rgb[0].shape[0], imgs_rgb[0].shape[1], 3))
-            }
-        
-        # Extract hand pose keypoints for segmentation guidance
-        kpts_2d = hamer_data.kpts_2d
-
-        max_dist_idx = self._select_init_frame(
-            bboxes, bbox_min_dist, hand_detected, kpts_2d, imgs_rgb[0].shape
-        )
-        # Shape (1, 21, 2) so zip(points, [idx]) passes all 21 keypoints
-        # to SAM2 in one call, preventing it from latching onto background.
-        points = kpts_2d[max_dist_idx].reshape(1, -1, 2)
-        bbox_init = bboxes[max_dist_idx]
-
-        # Process segmentation in both temporal directions
-        masks_forward, sam_imgs_forward = self._run_sam_segmentation(
-            paths, bbox_init, points, max_dist_idx, reverse=False
-        )
-        masks_reverse, sam_imgs_reverse = self._run_sam_segmentation(
-            paths, bbox_init, points, max_dist_idx, reverse=True
-        )
-
-        # Combine bidirectional results
-        sam_imgs = self._combine_sam_images(imgs_rgb, sam_imgs_forward, sam_imgs_reverse)
-        masks = self._combine_masks(imgs_rgb, masks_forward, masks_reverse)
-
-        # Remove spurious mask regions (e.g. background objects) by keeping
-        # only connected components that contain hand keypoints
-        masks = self._filter_mask_by_keypoints(masks, kpts_2d, hand_detected)
-
-        # Regenerate visualization after filtering
-        for idx in range(len(imgs_rgb)):
-            img = imgs_rgb[idx].copy()
-            img[masks[idx] > 0] = 0
-            sam_imgs[idx] = img
-
-        return {
-            f"{hand_side}_masks": masks,
-            f"{hand_side}_sam_imgs": sam_imgs
-        }
-
-    @staticmethod
-    def _select_init_frame(
-        bboxes: np.ndarray,
-        bbox_min_dist: np.ndarray,
-        hand_detected: np.ndarray,
-        kpts_2d: np.ndarray,
-        frame_shape: Tuple[int, ...],
-        max_bbox_ratio: float = 0.25,
-    ) -> int:
-        """Pick the best initialization frame for SAM2.
-
-        Rejects frames where:
-        - the hand is not detected
-        - the bbox covers more than *max_bbox_ratio* of the image area
-        - all keypoints are (0, 0)
-
-        Among the remaining candidates, returns the frame with the largest
-        ``bbox_min_dist`` (i.e. the hand furthest from the image edges).
-        Falls back to the plain argmax if no frame passes the filters.
-        """
-        img_h, img_w = frame_shape[:2]
-        img_area = float(img_h * img_w)
-        n_frames = len(bboxes)
-
-        candidates = []
-        for i in range(n_frames):
-            if not hand_detected[i]:
-                continue
-            x1, y1, x2, y2 = bboxes[i]
-            bbox_area = float(max(x2 - x1, 0)) * float(max(y2 - y1, 0))
-            if bbox_area / img_area > max_bbox_ratio:
-                continue
-            kpts = kpts_2d[i]
-            if np.allclose(kpts, 0):
-                continue
-            candidates.append(i)
-
-        if candidates:
-            return int(max(candidates, key=lambda i: bbox_min_dist[i]))
-        return int(np.argmax(bbox_min_dist))
-
-    def _run_sam_segmentation(
-        self,
-        paths: Paths,
-        bbox_dets: np.ndarray,
-        points: np.ndarray,
-        max_dist_idx: int,
-        reverse: bool
-    ) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray]]:
-        """
-        Process video segmentation in either forward or reverse temporal direction.
-        
-        Args:
-            paths: Paths object for file management
-            bbox_dets: Detectron2 bounding box for initialization
-            points: Hand keypoints for segmentation guidance
-            max_dist_idx: Index of highest-quality frame for initialization
-            reverse: Whether to process in reverse temporal order
-            
-        Returns:
-            Tuple of (segmentation_masks, visualization_images)
-        """
-        return self.detector_sam.segment_video(
-            paths.original_images_folder,
-            bbox_dets,
-            points,
-            [max_dist_idx],
-            reverse=reverse
-        )
-
-    @staticmethod
-    def _filter_mask_by_keypoints(
-        masks: np.ndarray,
-        kpts_2d: np.ndarray,
-        hand_detected: np.ndarray,
-    ) -> np.ndarray:
-        """Keep only mask connected components that contain hand keypoints.
-
-        For each frame, finds connected components and discards any that
-        don't overlap with the hand keypoints (e.g. background cloth
-        erroneously picked up by SAM2).
-        """
-        filtered = np.zeros_like(masks)
-        for idx in range(len(masks)):
-            mask_uint8 = (masks[idx] > 0).astype(np.uint8)
-            if mask_uint8.sum() == 0:
-                continue
-
-            num_labels, labels = cv2.connectedComponents(mask_uint8)
-
-            keep_labels = set()
-            if hand_detected[idx]:
-                for kpt in kpts_2d[idx]:
-                    x, y = int(round(kpt[0])), int(round(kpt[1]))
-                    if 0 <= y < labels.shape[0] and 0 <= x < labels.shape[1]:
-                        lbl = labels[y, x]
-                        if lbl > 0:
-                            keep_labels.add(lbl)
-
-            if keep_labels:
-                for lbl in keep_labels:
-                    filtered[idx][labels == lbl] = masks[idx][labels == lbl]
-            else:
-                filtered[idx] = masks[idx]
-
-        return filtered
-
-    def get_detectron_bboxes(self, imgs_rgb: np.ndarray, bbox_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """
-        Generate enhanced bounding boxes using Detectron2 for improved segmentation.
-
-        Args:
-            imgs_rgb: Array of RGB frames with shape (N, H, W, 3)
-            bbox_data: Initial bounding box data from hand detection stage containing:
-                      - left_bboxes: Left hand bounding boxes
-                      - right_bboxes: Right hand bounding boxes  
-                      - left_hand_detected: Boolean flags for left hand detection
-                      - right_hand_detected: Boolean flags for right hand detection
-                      - left_bbox_min_dist_to_edge: Quality metrics for left hand
-                      - right_bbox_min_dist_to_edge: Quality metrics for right hand
-
-        Returns:
-            Dictionary containing refined bounding boxes:
-            - left_det_bboxes: Enhanced left hand bounding boxes
-            - right_det_bboxes: Enhanced right hand bounding boxes
-
-        Raises:
-            ValueError: If input array is empty or has incorrect shape
-        """
-        self._validate_detectron_input(imgs_rgb)
-        
-        # Extract detection data and initialize output arrays
-        detection_data = self._extract_detection_data(bbox_data)
-        left_det_bboxes, right_det_bboxes = self._initialize_bbox_arrays(imgs_rgb)
-        
-        # Process only highest-quality frames for efficiency
-        idx_list = self._get_quality_frame_indices(bbox_data)
-        
-        for idx in tqdm(idx_list, desc="Processing frames"):
-            try:
-                self._process_detectron_frame(
-                    idx, imgs_rgb, detection_data, left_det_bboxes, right_det_bboxes
-                )
-            except Exception as e:
-                logging.error(f"Error processing frame {idx}: {str(e)}")
-      
-        return {"left_det_bboxes": left_det_bboxes, "right_det_bboxes": right_det_bboxes}
-
-    def _validate_detectron_input(self, imgs_rgb: np.ndarray) -> None:
-        """
-        Validate input array for Detectron2 processing.
-        
-        Args:
-            imgs_rgb: Array of RGB frames
-            
-        Raises:
-            ValueError: If input array is empty or has incorrect shape
-        """
-        if len(imgs_rgb) == 0:
-            raise ValueError("Empty input array - no video frames provided")
-        
-        if len(imgs_rgb.shape) != 4 or imgs_rgb.shape[-1] != 3:
-            raise ValueError(f"Expected input shape (N, H, W, 3), got {imgs_rgb.shape}. "
-                           f"Input should be RGB video frames.")
-
-    def _extract_detection_data(self, bbox_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """
-        Extract detection data from bounding box data.
-        
-        Args:
-            bbox_data: Bounding box detection data
-            
-        Returns:
-            Dictionary containing extracted detection data
-        """
-        return {
-            "left_bboxes": bbox_data["left_bboxes"],
-            "right_bboxes": bbox_data["right_bboxes"],
-            "left_hand_detected": bbox_data["left_hand_detected"],
-            "right_hand_detected": bbox_data["right_hand_detected"]
-        }
-
-    def _initialize_bbox_arrays(self, imgs_rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Initialize output bounding box arrays.
-        
-        Args:
-            imgs_rgb: RGB video frames for shape reference
-            
-        Returns:
-            Tuple of (left_det_bboxes, right_det_bboxes) initialized arrays
-        """
-        left_det_bboxes = np.zeros((len(imgs_rgb), 4))
-        right_det_bboxes = np.zeros((len(imgs_rgb), 4))
-        return left_det_bboxes, right_det_bboxes
-
-    def _get_quality_frame_indices(self, bbox_data: Dict[str, np.ndarray]) -> List[int]:
-        """
-        Get indices of highest-quality frames for processing.
-        
-        Args:
-            bbox_data: Bounding box detection data
-            
-        Returns:
-            List of frame indices to process
-        """
-        idx_left = np.argmax(bbox_data["left_bbox_min_dist_to_edge"])
-        idx_right = np.argmax(bbox_data["right_bbox_min_dist_to_edge"])
-        return [idx_left, idx_right]
-
-    def _process_detectron_frame(
-        self,
-        idx: int,
-        imgs_rgb: np.ndarray,
-        detection_data: Dict[str, np.ndarray],
-        left_det_bboxes: np.ndarray,
-        right_det_bboxes: np.ndarray
-    ) -> None:
-        """
-        Process a single frame with Detectron2 detection.
-        
-        Args:
-            idx: Frame index to process
-            imgs_rgb: RGB video frames
-            detection_data: Extracted detection data
-            left_det_bboxes: Left hand bounding box output array
-            right_det_bboxes: Right hand bounding box output array
-        """
-        left_hand_detected = detection_data["left_hand_detected"]
-        right_hand_detected = detection_data["right_hand_detected"]
-        
-        # Skip frames without any hand detections
-        if not left_hand_detected[idx] and not right_hand_detected[idx]:
-            left_det_bboxes[idx] = np.array([0, 0, 0, 0])
-            right_det_bboxes[idx] = np.array([0, 0, 0, 0])
-            return
-
-        # Apply Detectron2 detection
-        img = imgs_rgb[idx]
-        det_bboxes, det_scores = self.detectron_detector.get_bboxes(img, visualize=False)
-
-        if len(det_bboxes) == 0:
-            return
-        
-        # Match left hand detection with Detectron2 results
-        if left_hand_detected[idx]:
-            self._match_hand_detection(
-                idx, "left", detection_data, det_bboxes, left_det_bboxes
-            )
-
-        # Match right hand detection with Detectron2 results
-        if right_hand_detected[idx]:
-            self._match_hand_detection(
-                idx, "right", detection_data, det_bboxes, right_det_bboxes
-            )
-
-    def _match_hand_detection(
-        self,
-        idx: int,
-        hand_side: str,
-        detection_data: Dict[str, np.ndarray],
-        det_bboxes: np.ndarray,
-        output_bboxes: np.ndarray
-    ) -> None:
-        """
-        Match hand detection with Detectron2 results using overlap scores.
-        
-        Args:
-            idx: Frame index
-            hand_side: "left" or "right" hand
-            detection_data: Extracted detection data
-            det_bboxes: Detectron2 detection results
-            output_bboxes: Output bounding box array to update
-        """
-        bbox = detection_data[f"{hand_side}_bboxes"][idx]
-        overlap_scores = []
-        
-        for det_bbox in det_bboxes:
-            overlap_score = get_overlap_score(bbox, det_bbox)
-            overlap_scores.append(overlap_score)
-
-        if np.max(overlap_scores) > DEFAULT_OVERLAP_THRESHOLD:
-            best_idx = np.argmax(overlap_scores)
-            output_bboxes[idx] = det_bboxes[best_idx].astype(np.int32)
 
     @staticmethod
     def _save_results(
