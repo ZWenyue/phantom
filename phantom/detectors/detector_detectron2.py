@@ -42,7 +42,7 @@ class DetectorDetectron2:
                 root_dir, "_DATA/detectron_ckpts/model_final_f05665.pkl"
             )
         for predictor in detectron2_cfg.model.roi_heads.box_predictors:
-            predictor.test_score_thresh = 0.25
+            predictor.test_score_thresh = 0.05
         self.detectron2 = DefaultPredictor_Lazy(detectron2_cfg)
 
     def get_bboxes(self, img: np.ndarray, visualize: bool=False, 
@@ -83,11 +83,11 @@ class DetectorDetectron2:
 
         return pred_bboxes, pred_scores
 
-    def get_person_masks(self, img: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_person_masks(self, img: np.ndarray, score_thresh: float = 0.1) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Get instance segmentation masks for all detected persons."""
         det_out = self.detectron2(img)
         det_instances = det_out["instances"]
-        valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > 0.5)
+        valid_idx = (det_instances.pred_classes == 0) & (det_instances.scores > score_thresh)
         pred_masks = det_instances.pred_masks[valid_idx].cpu().numpy()
         pred_bboxes = det_instances.pred_boxes.tensor[valid_idx].cpu().numpy()
         pred_scores = det_instances.scores[valid_idx].cpu().numpy()

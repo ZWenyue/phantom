@@ -226,8 +226,50 @@ for each frame:
 
 | | SAM2 方案 | Detectron2 方案 |
 |---|---|---|
-| 首个 episode | ~12 min（含模型加载+I/O竞争） | ~3.5 min |
-| 后续 episode | ~1.5 min | ~3.5 min |
+| 首个 episode | ~12 min（含模型加载+I/O竞争） | ~2.5 min |
+| 后续 episode | ~1.5 min | ~2.5 min |
 | JPEG I/O | 539帧×2方向 写+读×4轮 | 无 |
-| GPU 操作 | 4轮 SAM2 propagation | 逐帧 Detectron2（~0.38s/帧） |
+| GPU 操作 | 4轮 SAM2 propagation | 逐帧 Detectron2（~0.28s/帧） |
 | mask 覆盖 | 仅手掌皮肤 | 手臂+手（含衣袖） |
+
+---
+
+## 改动三：提升 Detectron2 arm mask 覆盖率
+
+### 问题
+
+改动二后实测 episode 0（539 帧），仍有 ~90 帧没有 mask（手臂完全可见），分析发现：
+
+1. **60 帧**：Detectron2 检测到 person 但 score 在 0.25-0.49，被 `> 0.5` 阈值过滤
+2. **30 帧**：Detectron2 完全没有 person 检测（model 内部 `test_score_thresh=0.25` 已丢弃）
+3. **部分帧**：只检测到一条手臂，另一条漏检（手抓物体时不被识别为 person）
+
+### 改动
+
+#### 1. 降低 Detectron2 模型阈值
+
+`phantom/detectors/detector_detectron2.py`：`test_score_thresh` 从 0.25 降到 0.05，让模型返回更多低置信度检测。
+
+`get_person_masks` 增加 `score_thresh` 参数做二次过滤：
+- 有关键点的帧：`score_thresh=0.1`（关键点验证兜底，可以放宽）
+- 无关键点的帧：`score_thresh=0.3`（没有验证，稍严格防误检）
+
+#### 2. 关键点匹配 fallback
+
+当有关键点但没有 mask 匹配上时（mask 覆盖了另一只手），fallback 到保留所有 person mask，而不是丢弃。
+
+#### 3. 时序填充 `_temporal_fill`
+
+对 Detectron2 完全检测不到的帧，从最近的有 mask 帧复制 mask。相邻帧手臂位置变化小，填充效果可接受。
+
+#### 4. HaMeR 关键点凸包补充 mask
+
+对 Detectron2 漏检的手（有关键点但没有对应 mask），用 21 个关键点的凸包 + 膨胀生成补充 mask。覆盖 Detectron2 无法检测到的手部区域（如手抓物体时）。
+
+### 效果
+
+| | 改动二 | 改动三 |
+|---|---|---|
+| 有 mask 帧数 | 449/539 (83%) | 539/539 (100%) |
+| 平均 mask 覆盖率 | 12.16% | 13.67% |
+| 覆盖率提升 >1% 的帧 | — | 121 帧 |

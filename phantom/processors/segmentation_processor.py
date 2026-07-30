@@ -20,6 +20,7 @@ import logging
 import shutil
 from tqdm import tqdm
 import numpy as np
+import cv2
 import mediapy as media
 import argparse
 from typing import Dict, Tuple, Optional, List
@@ -245,43 +246,143 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         imgs_rgb: np.ndarray,
         bbox_data: Dict[str, np.ndarray],
         hamer_data: Dict[str, HandSequence],
+        detect_resolution: int = 480,
     ) -> np.ndarray:
         """
         Generate arm masks using Detectron2 instance segmentation.
 
-        For each frame, runs Detectron2 to get person masks, then keeps only
-        masks that contain hand keypoints from HaMeR. When no keypoints are
-        available (hand not detected), all person masks are included as fallback.
+        Frames are downscaled to detect_resolution before running Detectron2
+        for faster and more robust detection. Masks are generated at the
+        downscaled resolution, then resized back to the original size.
 
         Args:
             imgs_rgb: RGB video frames, shape (N, H, W, 3)
             bbox_data: Bounding box data with hand detection flags
             hamer_data: Hand pose data with 2D keypoints
+            detect_resolution: Max dimension for Detectron2 input
 
         Returns:
             Boolean mask array, shape (N, H, W)
         """
         n_frames = len(imgs_rgb)
         h, w = imgs_rgb[0].shape[:2]
-        masks = np.zeros((n_frames, h, w), dtype=np.bool_)
 
+        # Compute downscale factor
+        scale = min(detect_resolution / max(h, w), 1.0)
+        det_h, det_w = int(h * scale), int(w * scale)
+
+        masks_small = np.zeros((n_frames, det_h, det_w), dtype=np.bool_)
+
+        # Scale keypoints to detection resolution
         kpts_per_frame = self._collect_hand_keypoints(bbox_data, hamer_data)
+        kpts_per_frame_scaled = [kpts * scale if len(kpts) > 0 else kpts for kpts in kpts_per_frame]
+
+        per_hand_kpts = self._collect_per_hand_keypoints(bbox_data, hamer_data)
+        per_hand_kpts_scaled = [
+            [kpts * scale for kpts in hands] for hands in per_hand_kpts
+        ]
 
         for idx in tqdm(range(n_frames), desc="Detectron2 arm segmentation"):
-            pred_masks, _, _ = self.detectron_detector.get_person_masks(imgs_rgb[idx])
+            frame_kpts = kpts_per_frame_scaled[idx]
+            img_small = cv2.resize(imgs_rgb[idx], (det_w, det_h))
+
+            thresh = 0.1 if len(frame_kpts) > 0 else 0.3
+            pred_masks, _, _ = self.detectron_detector.get_person_masks(img_small, score_thresh=thresh)
             if len(pred_masks) == 0:
+                self._add_convex_hull_masks(masks_small, idx, per_hand_kpts_scaled[idx], det_h, det_w)
                 continue
 
-            frame_kpts = kpts_per_frame[idx]
             if len(frame_kpts) == 0:
                 for m in pred_masks:
-                    masks[idx] |= m
+                    masks_small[idx] |= m
             else:
+                matched_any = False
                 for m in pred_masks:
                     if self._mask_contains_any_keypoint(m, frame_kpts):
-                        masks[idx] |= m
+                        masks_small[idx] |= m
+                        matched_any = True
+                if not matched_any:
+                    for m in pred_masks:
+                        masks_small[idx] |= m
+
+            for hand_kpts in per_hand_kpts_scaled[idx]:
+                covered = any(
+                    self._mask_contains_any_keypoint(m, hand_kpts)
+                    for m in pred_masks
+                )
+                if not covered:
+                    self._add_convex_hull_mask(masks_small[idx], hand_kpts, det_h, det_w)
+
+        self._temporal_fill(masks_small)
+
+        # Resize masks back to original resolution
+        masks = np.zeros((n_frames, h, w), dtype=np.bool_)
+        for idx in range(n_frames):
+            masks[idx] = cv2.resize(
+                masks_small[idx].astype(np.uint8), (w, h),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(np.bool_)
 
         return masks
+
+    @staticmethod
+    def _temporal_fill(masks: np.ndarray) -> None:
+        """Fill empty frames by copying the mask from the nearest non-empty frame."""
+        has_mask = np.array([masks[i].any() for i in range(len(masks))])
+        if has_mask.all() or not has_mask.any():
+            return
+
+        empty_indices = np.where(~has_mask)[0]
+        filled_indices = np.where(has_mask)[0]
+
+        for idx in empty_indices:
+            nearest = filled_indices[np.argmin(np.abs(filled_indices - idx))]
+            masks[idx] = masks[nearest]
+
+        logger.info(f"Temporal fill: copied masks for {len(empty_indices)} empty frames")
+
+    def _collect_per_hand_keypoints(
+        self,
+        bbox_data: Dict[str, np.ndarray],
+        hamer_data: Dict[str, HandSequence],
+    ) -> List[List[np.ndarray]]:
+        """Collect keypoints separated by hand, for convex hull generation.
+
+        Returns:
+            List (per frame) of lists (per hand) of (21, 2) keypoint arrays.
+        """
+        n_frames = len(bbox_data["left_hand_detected"]) if "left_hand_detected" in bbox_data else len(bbox_data["right_hand_detected"])
+        result = []
+        for idx in range(n_frames):
+            hands = []
+            for side in hamer_data:
+                detected_key = f"{side}_hand_detected"
+                if detected_key in bbox_data and bbox_data[detected_key][idx]:
+                    kpts = hamer_data[side].kpts_2d[idx]
+                    if not np.allclose(kpts, 0):
+                        hands.append(kpts)
+            result.append(hands)
+        return result
+
+    @staticmethod
+    def _add_convex_hull_masks(masks: np.ndarray, idx: int, hand_kpts_list: List[np.ndarray], h: int, w: int) -> None:
+        """Add convex hull masks for all hands when no Detectron2 detection exists."""
+        for hand_kpts in hand_kpts_list:
+            ArmSegmentationProcessor._add_convex_hull_mask(masks[idx], hand_kpts, h, w)
+
+    @staticmethod
+    def _add_convex_hull_mask(frame_mask: np.ndarray, keypoints: np.ndarray, h: int, w: int, dilate_px: int = 60) -> None:
+        """Draw a dilated convex hull of hand keypoints onto the frame mask."""
+        pts = keypoints[:, :2].astype(np.float32)
+        pts[:, 0] = np.clip(pts[:, 0], 0, w - 1)
+        pts[:, 1] = np.clip(pts[:, 1], 0, h - 1)
+        hull = cv2.convexHull(pts.astype(np.int32))
+        hull_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillConvexPoly(hull_mask, hull, 1)
+        if dilate_px > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_px * 2 + 1, dilate_px * 2 + 1))
+            hull_mask = cv2.dilate(hull_mask, kernel, iterations=1)
+        frame_mask |= hull_mask.astype(np.bool_)
 
     def _collect_hand_keypoints(
         self,

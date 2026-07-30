@@ -15,7 +15,7 @@ set -euo pipefail
 # =============================================================================
 
 # ── defaults ──────────────────────────────────────────────────────────────────
-TASK="make_sandwich"
+TASK="make_sandwich_test"
 STEP="all"
 NUM_GPUS=4
 NUM_WORKERS=""  # defaults to NUM_GPUS if not set
