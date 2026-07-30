@@ -292,6 +292,7 @@ class TwinRobot:
         depth_img = self.get_depth_image(obs)
         robot_pos = obs["robot0_eef_pos"] - self.robot_base_pos
         pos_error = np.linalg.norm(robot_pos - state["pos"])
+        joint_pos = obs["robot0_joint_pos"]
 
         # Compile output dictionary
         output = {
@@ -301,6 +302,7 @@ class TwinRobot:
             "depth_img": depth_img,
             "robot_pos": robot_pos,
             "pos_err": pos_error,
+            "joint_pos": joint_pos,
         }
 
         # Add debug camera images if specified

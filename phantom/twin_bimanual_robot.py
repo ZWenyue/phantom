@@ -348,6 +348,8 @@ class TwinBimanualRobot:
         rgb_img = self.get_image(obs)
         depth_img = self.get_depth_image(obs)
         robot_pos = obs["robot0_eef_pos"] - self.robot_base_pos
+        joint_pos_right = obs["robot0_joint_pos"]
+        joint_pos_left = obs["robot1_joint_pos"]
 
         # Calculate end-effector tracking errors for both arms
         if not self.epic:
@@ -368,6 +370,8 @@ class TwinBimanualRobot:
             "robot_pos": robot_pos,
             "left_pos_err": left_pos_error,
             "right_pos_err": right_pos_error,
+            "joint_pos_left": joint_pos_left,
+            "joint_pos_right": joint_pos_right,
         }
 
         # Add debug camera images if specified

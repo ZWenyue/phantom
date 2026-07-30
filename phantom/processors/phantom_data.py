@@ -33,9 +33,11 @@ class TrainingData:
     action_gripper_right: np.ndarray
     gripper_width_left: np.ndarray
     gripper_width_right: np.ndarray
+    joint_pos_left: np.ndarray
+    joint_pos_right: np.ndarray
 
     @classmethod
-    def create_empty_frame(cls, frame_idx: int) -> 'TrainingData':
+    def create_empty_frame(cls, frame_idx: int, n_joints: int = 7) -> 'TrainingData':
         """Create a frame with no hand detection"""
         return cls(
             frame_idx=frame_idx,
@@ -48,6 +50,8 @@ class TrainingData:
             action_gripper_right=0,
             gripper_width_left=0,
             gripper_width_right=0,
+            joint_pos_left=np.zeros((n_joints,)),
+            joint_pos_right=np.zeros((n_joints,)),
         )
 
 class TrainingDataSequence(LazyLoadingMixin):
@@ -66,6 +70,8 @@ class TrainingDataSequence(LazyLoadingMixin):
         self._action_gripper_right: Optional[np.ndarray] = None
         self._gripper_width_left: Optional[np.ndarray] = None
         self._gripper_width_right: Optional[np.ndarray] = None
+        self._joint_pos_left: Optional[np.ndarray] = None
+        self._joint_pos_right: Optional[np.ndarray] = None
     
     def add_frame(self, frame: TrainingData) -> None:
         """Add a frame to the sequence and invalidate cached properties."""
@@ -86,6 +92,8 @@ class TrainingDataSequence(LazyLoadingMixin):
             'action_gripper_right': self.action_gripper_right,
             'gripper_width_left': self.gripper_width_left,
             'gripper_width_right': self.gripper_width_right,
+            'joint_pos_left': self.joint_pos_left,
+            'joint_pos_right': self.joint_pos_right,
         }
         
         np.savez_compressed(
@@ -172,7 +180,21 @@ class TrainingDataSequence(LazyLoadingMixin):
             '_gripper_width_right',
             lambda: np.stack([f.gripper_width_right for f in self.frames])
         )
-    
+
+    @property
+    def joint_pos_left(self) -> np.ndarray:
+        return self._get_cached_property(
+            '_joint_pos_left',
+            lambda: np.stack([f.joint_pos_left for f in self.frames])
+        )
+
+    @property
+    def joint_pos_right(self) -> np.ndarray:
+        return self._get_cached_property(
+            '_joint_pos_right',
+            lambda: np.stack([f.joint_pos_right for f in self.frames])
+        )
+
     def _invalidate_cache(self):
         """Invalidate all cached properties."""
         self._frame_indices = None
@@ -185,6 +207,8 @@ class TrainingDataSequence(LazyLoadingMixin):
         self._action_gripper_right = None
         self._gripper_width_left = None
         self._gripper_width_right = None
+        self._joint_pos_left = None
+        self._joint_pos_right = None
 
     @classmethod
     def load(cls, path: str) -> 'TrainingDataSequence':
@@ -202,6 +226,9 @@ class TrainingDataSequence(LazyLoadingMixin):
         sequence._action_gripper_right = data['action_gripper_right']
         sequence._gripper_width_left = data['gripper_width_left']
         sequence._gripper_width_right = data['gripper_width_right']
+        if 'joint_pos_left' in data:
+            sequence._joint_pos_left = data['joint_pos_left']
+            sequence._joint_pos_right = data['joint_pos_right']
 
         return sequence
 

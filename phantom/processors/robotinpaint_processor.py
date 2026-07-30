@@ -192,6 +192,18 @@ class RobotInpaintProcessor(BaseProcessor):
                 if "birdview" in self.debug_cameras:
                     img_birdview.append(np.zeros_like(images['human_imgs'][idx]))
             else:
+                # Extract joint positions from simulation
+                if self.bimanual_setup == "single_arm":
+                    jp = frame_results['joint_pos']
+                    n_joints = len(jp)
+                    if self.target_hand == "left":
+                        jp_left, jp_right = jp, np.zeros(n_joints)
+                    else:
+                        jp_left, jp_right = np.zeros(n_joints), jp
+                else:
+                    jp_left = frame_results['joint_pos_left']
+                    jp_right = frame_results['joint_pos_right']
+
                 # Create comprehensive training data annotation
                 sequence.add_frame(TrainingData(
                     frame_idx=idx,
@@ -204,6 +216,8 @@ class RobotInpaintProcessor(BaseProcessor):
                     action_gripper_right=gripper_actions['right'][idx],
                     gripper_width_left=gripper_widths['left'][idx],
                     gripper_width_right=gripper_widths['right'][idx],
+                    joint_pos_left=jp_left,
+                    joint_pos_right=jp_right,
                 ))
                 img_overlay.append(frame_results['rgb_robot_overlay'])
                 if "birdview" in self.debug_cameras:
@@ -283,6 +297,12 @@ class RobotInpaintProcessor(BaseProcessor):
         output = {
             'rgb_robot_overlay': rgb_robot_overlay,
         }
+
+        if self.bimanual_setup == "single_arm":
+            output['joint_pos'] = robot_results['joint_pos']
+        else:
+            output['joint_pos_left'] = robot_results['joint_pos_left']
+            output['joint_pos_right'] = robot_results['joint_pos_right']
 
         # Add debug camera views if requested
         for cam in self.debug_cameras:
