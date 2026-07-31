@@ -93,9 +93,12 @@ class RobotInpaintProcessor(BaseProcessor):
                 square=self.square,
             )
         else:
+            robot_name = self.robot
+            if self.bimanual_setup == "r1pro":
+                robot_name = ["R1ProRightArm", "R1ProLeftArm"]
             self.twin_robot = TwinBimanualRobot(
-                self.robot, 
-                self.gripper, 
+                robot_name,
+                self.gripper,
                 self.bimanual_setup,
                 camera_params,
                 camera_height=img_h, 
@@ -704,8 +707,10 @@ class RobotInpaintProcessor(BaseProcessor):
         fx, fy, cx, cy = self._get_camera_intrinsics(offset)
         sensor_width, sensor_height = self._calculate_sensor_size(img_w, img_h, fx, fy)
 
-        # Select appropriate camera name based on dataset
-        if self.epic:
+        # Select appropriate camera name based on dataset and robot setup
+        if self.bimanual_setup == "single_arm":
+            camera_name = "frontview"
+        elif self.epic:
             camera_name = "zed"
         else:
             camera_name = "frontview"

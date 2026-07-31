@@ -1,0 +1,38 @@
+# EgoDex dataset configuration - R1 Pro Bimanual
+debug: false
+verbose: false
+skip_existing: false
+n_processes: 1
+data_root_dir: "/mnt/r/DATA/EgoDex/test_phantom"
+processed_data_root_dir: "/mnt/r/DATA/EgoDex/test_phantom_processed"
+demo_name: ""
+
+# Processing settings
+mode: ["bbox"]
+demo_num: null
+
+# Additional settings
+debug_cameras: []
+
+# R1 Pro bimanual settings
+input_resolution: 1080
+output_resolution: 1080
+robot: "R1ProRightArm"
+gripper: "Robotiq85"
+square: false
+epic: true
+bimanual_setup: "r1pro"
+target_hand: "both"
+constrained_hand: false
+depth_for_overlay: false
+render: false
+camera_intrinsics: "camera/camera_intrinsics_egodex.json"
+camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
+
+# Hand inpainting settings
+inpaint_resolution: 480
+
+# Mask dilation
+mask_dilate_kernel: "MORPH_ELLIPSE"
+mask_dilate_size: 11
+mask_dilate_iterations: 3

@@ -141,8 +141,12 @@ class TwinBimanualRobot:
         options: dict[str, Union[str, list[str], dict[str, Any], bool, int, np.ndarray]] = {}
         options["env_name"] = "PhantomBimanual"
         options["bimanual_setup"] = bimanual_setup
-        options["robots"] = [self.robot_name, self.robot_name]  # Two identical robots
-        if self.robot_name == "Kinova3":
+        if isinstance(self.robot_name, list):
+            options["robots"] = self.robot_name
+        else:
+            options["robots"] = [self.robot_name, self.robot_name]
+        robot0_name = options["robots"][0]
+        if robot0_name == "Kinova3":
             options["gripper_types"] = [f"{self.gripper_name}GripperRealKinova", f"{self.gripper_name}GripperRealKinova"]
         else:
             options["gripper_types"] = [f"{self.gripper_name}Gripper", f"{self.gripper_name}Gripper"]
