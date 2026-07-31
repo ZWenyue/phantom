@@ -18,7 +18,7 @@ debug_cameras: []
 input_resolution: 1080
 output_resolution: 1080
 robot: "R1ProRightArm"
-gripper: "Robotiq85"
+gripper: "R1Pro"
 square: false
 epic: true
 bimanual_setup: "r1pro"
@@ -26,8 +26,8 @@ target_hand: "both"
 constrained_hand: false
 depth_for_overlay: false
 render: false
-camera_intrinsics: "camera/camera_intrinsics_egodex.json"
-camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
+camera_intrinsics: "phantom/camera/camera_intrinsics_egodex.json"
+camera_extrinsics: "phantom/camera/camera_extrinsics_ego_bimanual_shoulders.json"
 
 # Hand inpainting settings
 inpaint_resolution: 480

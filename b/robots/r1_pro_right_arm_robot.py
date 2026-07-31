@@ -19,7 +19,7 @@ class R1ProRightArm(ManipulatorModel):
 
     @property
     def default_gripper(self):
-        return "Robotiq85Gripper"
+        return "R1ProGripper"
 
     @property
     def default_controller_config(self):

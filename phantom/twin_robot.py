@@ -335,6 +335,10 @@ class TwinRobot:
             open_gripper_action, closed_gripper_action = 0, 255  # 0=open, 255=closed
             # Linear interpolation between open and closed states
             return np.interp(gripper_pos, [min_gripper_pos, max_gripper_pos], [closed_gripper_action, open_gripper_action])
+        elif self.gripper_name == "R1Pro":
+            min_gripper_pos, max_gripper_pos = 0.0, 0.1
+            gripper_pos = np.clip(gripper_pos, min_gripper_pos, max_gripper_pos)
+            return np.interp(gripper_pos, [min_gripper_pos, max_gripper_pos], [1, -1])
         else:
             raise ValueError(f"Gripper name {self.gripper_name} not supported")
 

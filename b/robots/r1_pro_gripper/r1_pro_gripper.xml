@@ -1,0 +1,51 @@
+<mujoco model="r1_pro_gripper">
+    <asset>
+        <mesh name="gripper_link" file="meshes/gripper_link.stl"/>
+        <mesh name="finger_link1" file="meshes/finger_link1.stl"/>
+        <mesh name="finger_link2" file="meshes/finger_link2.stl"/>
+    </asset>
+
+    <worldbody>
+        <body name="base_mount" pos="0 0 0">
+            <inertial pos="0 0 -0.018" mass="0.246" diaginertia="1e-4 1e-4 1e-4"/>
+            <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.75 0.75 0.75 1" mesh="gripper_link"/>
+            <geom type="mesh" conaffinity="0" rgba="0.75 0.75 0.75 1" mesh="gripper_link" name="gripper_link_collision"/>
+            <site name="ft_frame" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 1" type="sphere" group="1"/>
+
+            <body name="eef" pos="0 0 0.155" quat="0.707105 0 0 -0.707105">
+                <site name="grip_site" pos="0 0 0" size="0.01 0.01 0.01" rgba="1 0 0 0.5" type="sphere" group="1"/>
+                <site name="ee_x" pos="0.1 0 0" size="0.005 0.1" quat="0.707105 0 0.707108 0" rgba="1 0 0 0" type="cylinder" group="1"/>
+                <site name="ee_y" pos="0 0.1 0" size="0.005 0.1" quat="0.707105 0.707108 0 0" rgba="0 1 0 0" type="cylinder" group="1"/>
+                <site name="ee_z" pos="0 0 0.1" size="0.005 0.1" quat="1 0 0 0" rgba="0 0 1 0" type="cylinder" group="1"/>
+                <site name="grip_site_cylinder" pos="0 0 0" size="0.005 10" rgba="0 1 0 0.3" type="cylinder" group="1"/>
+            </body>
+
+            <body name="finger1" pos="-0.0001 0.013453 -0.03689">
+                <inertial pos="0.006 0.015 0.020" mass="0.027" diaginertia="1e-6 1e-6 1e-6"/>
+                <joint name="finger_joint1" type="slide" pos="0 0 0" axis="0 1 0" range="0 0.05" damping="0.1"/>
+                <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.3 0.3 0.3 1" mesh="finger_link1"/>
+                <geom type="mesh" conaffinity="0" rgba="0.3 0.3 0.3 1" mesh="finger_link1" name="finger1_collision"/>
+            </body>
+
+            <body name="finger2" pos="0.0001 -0.013453 -0.03689">
+                <inertial pos="-0.006 -0.015 0.020" mass="0.027" diaginertia="1e-6 1e-6 1e-6"/>
+                <joint name="finger_joint2" type="slide" pos="0 0 0" axis="0 1 0" range="-0.05 0" damping="0.1"/>
+                <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.3 0.3 0.3 1" mesh="finger_link2"/>
+                <geom type="mesh" conaffinity="0" rgba="0.3 0.3 0.3 1" mesh="finger_link2" name="finger2_collision"/>
+            </body>
+        </body>
+    </worldbody>
+
+    <equality>
+        <joint joint1="finger_joint1" joint2="finger_joint2" polycoef="0 -1 0 0 0"/>
+    </equality>
+
+    <actuator>
+        <position name="fingers_actuator" joint="finger_joint1" kp="100" ctrlrange="0 0.05" forcerange="-100 100"/>
+    </actuator>
+
+    <sensor>
+        <force name="force_ee" site="ft_frame"/>
+        <torque name="torque_ee" site="ft_frame"/>
+    </sensor>
+</mujoco>
