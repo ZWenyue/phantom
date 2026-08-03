@@ -9,7 +9,7 @@
 	url = https://github.com/ZWenyue/phantom-robosuite.git
 [submodule "submodules/phantom-robomimic"]
 	path = submodules/phantom-robomimic
-	url = https://github.com/MarionLepert/phantom-robomimic.git
+	url = https://github.com/ZWenyue/phantom-robomimic.git
 [submodule "submodules/phantom-hamer"]
 	path = submodules/phantom-hamer
-	url = https://github.com/MarionLepert/phantom-hamer.git
+	url = https://github.com/ZWenyue/phantom-hamer.git
