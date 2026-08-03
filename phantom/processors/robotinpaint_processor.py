@@ -70,6 +70,13 @@ class RobotInpaintProcessor(BaseProcessor):
         self.use_depth = self.depth_for_overlay
         self._initialize_robot()
 
+    @property
+    def _action_tag(self) -> str:
+        """Suffix for loading action/smoothing npz (reuse r1pro trajectories for nolimit)."""
+        if self.bimanual_setup == "r1pro_nolimit":
+            return "r1pro"
+        return self.bimanual_setup
+
     def _initialize_robot(self) -> None:
         """
         Initialize the twin robot simulation with calibrated camera parameters.
@@ -94,8 +101,15 @@ class RobotInpaintProcessor(BaseProcessor):
             )
         else:
             robot_name = self.robot
-            if self.bimanual_setup == "r1pro":
+            if self.bimanual_setup in ("r1pro", "r1pro_nolimit"):
                 robot_name = ["R1ProRightArm", "R1ProLeftArm"]
+            # Limited r1pro needs long settle; nolimit can track ori with fewer steps.
+            if self.bimanual_setup == "r1pro":
+                n_steps_short = 80
+            elif self.bimanual_setup == "r1pro_nolimit":
+                n_steps_short = 20
+            else:
+                n_steps_short = 10
             self.twin_robot = TwinBimanualRobot(
                 robot_name,
                 self.gripper,
@@ -104,7 +118,7 @@ class RobotInpaintProcessor(BaseProcessor):
                 camera_height=img_h, 
                 camera_width=img_w,
                 render=self.render, 
-                n_steps_short=10, 
+                n_steps_short=n_steps_short,
                 n_steps_long=75,
                 debug_cameras=self.debug_cameras,
                 epic=self.epic,
@@ -280,6 +294,10 @@ class RobotInpaintProcessor(BaseProcessor):
                 return None
         else:
             if robot_results['left_pos_err'] > self.TRACKING_ERROR_THRESHOLD or robot_results['right_pos_err'] > self.TRACKING_ERROR_THRESHOLD:
+                print(
+                    f"Tracking error too large at frame {idx}, skipping "
+                    f"L={robot_results['left_pos_err']:.3f} R={robot_results['right_pos_err']:.3f}"
+                )
                 logger.warning(f"Tracking error too large at frame {idx}, skipping")
                 return None
 
@@ -348,8 +366,8 @@ class RobotInpaintProcessor(BaseProcessor):
             # Get paths based on target hand for single-arm operation
             smoothed_base = getattr(paths, f"smoothed_actions_{self.target_hand}")
             actions_base = getattr(paths, f"actions_{self.target_hand}")
-            smoothed_actions_path = str(smoothed_base).replace(".npz", f"_{self.bimanual_setup}.npz")
-            actions_path = str(actions_base).replace(".npz", f"_{self.bimanual_setup}.npz")
+            smoothed_actions_path = str(smoothed_base).replace(".npz", f"_{self._action_tag}.npz")
+            actions_path = str(actions_base).replace(".npz", f"_{self._action_tag}.npz")
             
             # Load actual trajectory data for target hand
             ee_pts = np.load(smoothed_actions_path)["ee_pts"]
@@ -370,9 +388,9 @@ class RobotInpaintProcessor(BaseProcessor):
             }
 
         # Load bimanual trajectory data
-        smoothed_actions_left_path = str(paths.smoothed_actions_left).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
-        smoothed_actions_right_path = str(paths.smoothed_actions_right).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
-        actions_left_path = str(paths.actions_left).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
+        smoothed_actions_left_path = str(paths.smoothed_actions_left).split(".npz")[0] + f"_{self._action_tag}.npz"
+        smoothed_actions_right_path = str(paths.smoothed_actions_right).split(".npz")[0] + f"_{self._action_tag}.npz"
+        actions_left_path = str(paths.actions_left).split(".npz")[0] + f"_{self._action_tag}.npz"
         return {
             'ee_pts_left': np.load(smoothed_actions_left_path)["ee_pts"],
             'ee_oris_left': np.load(smoothed_actions_left_path)["ee_oris"],
@@ -431,8 +449,8 @@ class RobotInpaintProcessor(BaseProcessor):
             )
         
         # Process bimanual gripper data
-        smoothed_actions_left_path = str(paths.smoothed_actions_left).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
-        smoothed_actions_right_path = str(paths.smoothed_actions_right).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
+        smoothed_actions_left_path = str(paths.smoothed_actions_left).split(".npz")[0] + f"_{self._action_tag}.npz"
+        smoothed_actions_right_path = str(paths.smoothed_actions_right).split(".npz")[0] + f"_{self._action_tag}.npz"
         left_actions, left_widths = self._compute_gripper_actions(
             np.load(smoothed_actions_left_path)["ee_widths"]
         )

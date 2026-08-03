@@ -11,6 +11,8 @@ set -euo pipefail
 #   bash b/run_process.sh --task pour              # different task
 #   bash b/run_process.sh --step hand2d,action     # multiple steps
 #   bash b/run_process.sh --data-root /path/to/raw # custom input dir
+#   bash b/run_process.sh --config egodex_r1pro_bimanual  # R1 Pro overlay
+#   bash b/run_process.sh --demo-num 0_useful --no-skip   # one episode, force rerun
 #   bash b/run_process.sh --dry-run                # print commands only
 # =============================================================================
 
@@ -22,6 +24,9 @@ NUM_WORKERS=""  # defaults to NUM_GPUS if not set
 CPU_WORKERS=64
 DATA_ROOT="/mnt/r/DATA/EgoDex/test_phantom"
 PROCESSED_ROOT="/mnt/r/DATA/EgoDex/test_phantom_processed"
+CONFIG_NAME="egodex_r1pro_bimanual"
+DEMO_NUM=""       # if set, only process this episode folder (e.g. 0_useful)
+SKIP_EXISTING="true"
 DRY_RUN=false
 
 # ── parse args ────────────────────────────────────────────────────────────────
@@ -34,9 +39,12 @@ while [[ $# -gt 0 ]]; do
         --cpu-workers)   CPU_WORKERS="$2";          shift 2 ;;
         --data-root)     DATA_ROOT="$2";            shift 2 ;;
         --processed-root) PROCESSED_ROOT="$2";      shift 2 ;;
+        --config)        CONFIG_NAME="$2";          shift 2 ;;
+        --demo-num)      DEMO_NUM="$2";             shift   2 ;;
+        --no-skip)       SKIP_EXISTING="false";     shift   ;;
         --dry-run)       DRY_RUN=true;              shift   ;;
         -h|--help)
-            sed -n '3,12p' "$0"; exit 0 ;;
+            sed -n '3,14p' "$0"; exit 0 ;;
         *)
             echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -45,12 +53,13 @@ done
 DEMO_NAME="egodex_${TASK}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PHANTOM_DIR="${SCRIPT_DIR}/../phantom"
-CONFIG_ARGS="--config-path=../b/configs --config-name=egodex"
+CONFIG_ARGS="--config-path=../b/configs --config-name=${CONFIG_NAME}"
 DATA_ARGS="data_root_dir=${DATA_ROOT} processed_data_root_dir=${PROCESSED_ROOT}"
 
 # Activate phantom conda env
 eval "$(conda shell.bash hook 2>/dev/null)"
 conda activate phantom
+export PYTHONUNBUFFERED=1
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 run_cmd() {
@@ -96,6 +105,30 @@ default_workers() {
 
 step_gpu() {
     local mode="$1"
+
+    # Single explicit episode (e.g. 0_useful) — skip worker sharding
+    if [[ -n "$DEMO_NUM" ]]; then
+        echo "═══ ${mode^^} (demo_num=${DEMO_NUM}, config=${CONFIG_NAME}) ═══"
+        cd "$PHANTOM_DIR"
+        local log_file="/tmp/phantom_${DEMO_NAME}_${mode}_${DEMO_NUM}.log"
+        echo "  → ${log_file}"
+        if ! $DRY_RUN; then
+            CUDA_VISIBLE_DEVICES=0 \
+            python process_data.py \
+                ${CONFIG_ARGS} \
+                ${DATA_ARGS} \
+                demo_name="${DEMO_NAME}" \
+                mode="${mode}" \
+                demo_num="${DEMO_NUM}" \
+                skip_existing="${SKIP_EXISTING}" \
+                n_processes=1 \
+                2>&1 | tee "$log_file"
+        else
+            echo "▸ python process_data.py ... demo_num=${DEMO_NUM} skip_existing=${SKIP_EXISTING}"
+        fi
+        return 0
+    fi
+
     local n_episodes
     n_episodes=$(count_episodes)
     local n_workers=${NUM_WORKERS:-$(default_workers "$mode")}
@@ -105,7 +138,7 @@ step_gpu() {
         return 1
     fi
 
-    echo "═══ ${mode^^} (${n_workers} workers × ${NUM_GPUS} GPUs, ${n_episodes} episodes) ═══"
+    echo "═══ ${mode^^} (${n_workers} workers × ${NUM_GPUS} GPUs, ${n_episodes} episodes, config=${CONFIG_NAME}) ═══"
 
     local per_worker=$(( (n_episodes + n_workers - 1) / n_workers ))
     pids=()
@@ -135,7 +168,7 @@ step_gpu() {
                     demo_name="${DEMO_NAME}" \
                     mode="${mode}" \
                     demo_num="${demo_idx}" \
-                    skip_existing=true \
+                    skip_existing="${SKIP_EXISTING}" \
                     n_processes=1 \
                     2>&1
             done
@@ -200,7 +233,7 @@ step_serial() {
         ${DATA_ARGS} \
         demo_name="${DEMO_NAME}" \
         mode="${mode}" \
-        skip_existing=true \
+        skip_existing="${SKIP_EXISTING}" \
         n_processes=1
 }
 
@@ -221,8 +254,11 @@ run_step() {
 # ── main ──────────────────────────────────────────────────────────────────────
 STEPS_ORDER=(bbox hand2d arm_segmentation action smoothing hand_inpaint robot_inpaint)
 
-echo "Task: ${TASK} | Demo: ${DEMO_NAME} | GPUs: ${NUM_GPUS}"
+echo "Task: ${TASK} | Demo: ${DEMO_NAME} | GPUs: ${NUM_GPUS} | Config: ${CONFIG_NAME}"
 echo "Data: ${DATA_ROOT} | Processed: ${PROCESSED_ROOT}"
+if [[ -n "$DEMO_NUM" ]]; then
+    echo "Episode: ${DEMO_NUM} | skip_existing=${SKIP_EXISTING}"
+fi
 echo ""
 
 if [[ "$STEP" == "all" ]]; then

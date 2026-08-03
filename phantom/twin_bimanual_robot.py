@@ -154,7 +154,17 @@ class TwinBimanualRobot:
         # Configure controller (OSC pose control by default)
         controller_config = load_controller_config(default_controller="OSC_POSE")
         controller_config["control_delta"] = False  # Use absolute positioning
-        controller_config["uncouple_pos_ori"] = False  # Couple position and orientation
+        if self.bimanual_setup == "r1pro_nolimit":
+            # No joint limits + both_fwd bases: ori=40 keeps pos ≤5cm at n_steps=20.
+            controller_config["uncouple_pos_ori"] = True
+            controller_config["kp"] = [300, 300, 300, 40, 40, 40]
+        elif self.bimanual_setup == "r1pro":
+            # Short TCP: prioritize Cartesian position over hand orientation.
+            # Equal pos/ori gains drive wrist joints into limits and miss the grip site.
+            controller_config["uncouple_pos_ori"] = True
+            controller_config["kp"] = [300, 300, 300, 5, 5, 5]
+        else:
+            controller_config["uncouple_pos_ori"] = False
         options["controller_configs"] = controller_config
         
         # Override with joint controller if specified
@@ -207,7 +217,24 @@ class TwinBimanualRobot:
         self.reset()
         self.robot_base_pos = np.array([0, 0, self.env.env.robot_base_height+self.env.env.robot_base_offset])
 
- 
+        if self.bimanual_setup == "r1pro_nolimit":
+            self._disable_arm_joint_limits()
+
+    def _disable_arm_joint_limits(self) -> None:
+        """Remove MuJoCo hinge limits on R1 Pro arm joints (simulation-only experiment)."""
+        sim = self.env.env.sim
+        disabled = []
+        for j in range(sim.model.njnt):
+            name = sim.model.joint_id2name(j)
+            if name is None or "Actuator" not in name:
+                continue
+            sim.model.jnt_limited[j] = 0
+            # Keep a huge soft range for any code that still reads jnt_range.
+            sim.model.jnt_range[j, 0] = -6.0 * np.pi
+            sim.model.jnt_range[j, 1] = 6.0 * np.pi
+            disabled.append(name)
+        print(f"[r1pro_nolimit] disabled limits on {len(disabled)} joints: {disabled}")
+
     def reset(self):
         """Reset environment and clear observation history."""
         self.env.reset()

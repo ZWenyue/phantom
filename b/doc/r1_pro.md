@@ -54,16 +54,20 @@ MuJoCo 仿真中出现数值不稳定（"Nan, Inf or huge value in QACC at DOF 2
 - 右臂：`R1ProRightArm`（robot 0）
 - 左臂：`R1ProLeftArm`（robot 1）
 
-`PhantomBimanual` 环境中 `"r1pro"` setup 的基座配置：
-- Robot 0（右臂）：pos=(-0.2, -0.1, 1.8), rot=(0, 0, pi/2)
-- Robot 1（左臂）：pos=(-0.2, 0.2, 1.7), rot=(0, 0, -pi/2)
+`PhantomBimanual` 环境中 `"r1pro"` / `"r1pro_nolimit"` 基座（both_fwd，配合短 TCP）：
+- Robot 0（右臂）：pos=(-0.28, -0.12, 1.74), rot=(0, 0, pi/2)
+- Robot 1（左臂）：pos=(-0.22, 0.20, 1.56), rot=(0, 0, -pi/2)
+
+配套：`uncouple_pos_ori=True`、`kp=[300,300,300,5,5,5]`（位置优先）、`n_steps_short=80`、更伸展的 `init_qpos`。人手姿态常不可达，等权 ori 增益会把腕关节顶死并拖偏 grip_site。
+
+实验配置 `egodex_r1pro_bimanual_nolimit.yaml`（`bimanual_setup: r1pro_nolimit`）会在仿真里去掉臂关节限位，用 `kp=[300,300,300,40,40,40]`、`n_steps_short=20`；全 episode 可达 539/539。输出 `*_r1pro_nolimit.*`，不能用于真机。
 
 ### 夹爪
 
 使用 R1 Pro 原生平行夹爪（`R1ProGripper`），替代 Robotiq85。
 - 2 个棱柱关节（prismatic），沿 Y 轴对称开合，行程 ±50mm
 - 1 个 actuator 驱动 finger_joint1，通过 equality constraint 耦合 finger_joint2
-- `eef` body（grip_site/IK 控制点）位于 `pos="0 0 0.155"` from base_mount — 与之前 Robotiq85 的 grip_site 位置一致，保证 IK 行为不变
+- `eef` / `grip_site` 使用几何抓取中心 `pos="0 0 0.06"`（不要用 Robotiq 的 0.155 假长，否则 IK 虽过、夹爪相对人手会系统性偏移）
 - `right_hand` body 使用 identity quat（无旋转），原生夹爪 mesh 朝向已正确
 
 ### 控制器
@@ -86,6 +90,7 @@ python phantom/process_data.py \
 
 ## 当前状态
 
-- Pipeline 端到端可运行，约 93.3% 帧通过 tracking error 阈值（5cm）
-- 渲染质量正确：机械臂连接正常，R1 Pro 原生夹爪朝向正确
-- 待优化：双臂基座位置/朝向调优，减少 tracking error 帧数
+- TCP 使用几何正确的 eef z=0.06（禁止退回 Robotiq 假长 0.155）
+- 短 TCP 下必须位置优先 OSC；probe 上 `kp pos=300/ori=5` 可达 mm 级跟踪
+- 判据以夹爪是否叠在人手上为准
+- 调基座 / OSC 增益前先跑探针：见 [`probe_r1pro_tcp.md`](probe_r1pro_tcp.md)（`b/probe_r1pro_tcp.py`）

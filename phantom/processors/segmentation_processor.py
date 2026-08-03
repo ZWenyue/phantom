@@ -88,7 +88,7 @@ class BaseSegmentationProcessor(BaseProcessor):
                 return {"right": HandSequence.load(paths.hand_data_right)}
             else:
                 raise ValueError(f"Invalid target hand: {self.target_hand}")
-        elif self.bimanual_setup == "shoulders":    
+        elif self.bimanual_setup in ("shoulders", "r1pro", "r1pro_nolimit"):
             return {
                 "left": HandSequence.load(paths.hand_data_left),
                 "right": HandSequence.load(paths.hand_data_right)
