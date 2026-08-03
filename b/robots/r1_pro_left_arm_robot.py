@@ -27,8 +27,8 @@ class R1ProLeftArm(ManipulatorModel):
 
     @property
     def init_qpos(self):
-        # Mirror of right-arm outstretched home for short TCP reachability.
-        return np.array([0.0, 0.6, 0.0, -0.5, 0.0, 0.4, 0.0])
+        # Mirror of right mildly-outstretched home (J2/J3 signs flipped).
+        return np.array([0.0, 0.35, -0.25, -0.20, 0.0, 0.15, 0.0])
 
     @property
     def base_xpos_offset(self):

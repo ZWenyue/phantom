@@ -118,8 +118,8 @@ print(f"对应关节角: {nearest_jnt}")
 
 - **不加 `--bimanual`**：EEF 位置在臂基座坐标系下，原点为臂的 base link
 - **加 `--bimanual`**：EEF 位置在世界坐标系下，基座位姿来自 `phantom_bimanual.py`：
-  - 右臂 base: pos=(-0.28, -0.12, 1.74), euler=(0, 0, π/2)
-  - 左臂 base: pos=(-0.22, 0.20, 1.56), euler=(0, 0, -π/2)
+  - 右臂 base: pos=(-0.18, -0.40, 1.70), euler=(0, 0, π/2)
+  - 左臂 base: pos=(-0.15, 0.42, 1.55), euler=(0, 0, -π/2)
 
 如果你的目标点是在世界坐标系下（如从相机标定得到的），使用 `--bimanual`。
 

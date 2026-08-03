@@ -41,7 +41,7 @@ ARM_CONFIGS = {
         ]),
         "eef_body": "right_hand",
         # Bimanual base pose from phantom_bimanual.py
-        "base_pos": np.array([-0.22, 0.20, 1.56]),
+        "base_pos": np.array([-0.15, 0.42, 1.55]),
         "base_euler": np.array([0.0, 0.0, -np.pi / 2]),
     },
     "right": {
@@ -55,7 +55,7 @@ ARM_CONFIGS = {
             [-1.5708, 1.5708],   # J7 axis X
         ]),
         "eef_body": "right_hand",
-        "base_pos": np.array([-0.28, -0.12, 1.74]),
+        "base_pos": np.array([-0.18, -0.40, 1.70]),
         "base_euler": np.array([0.0, 0.0, np.pi / 2]),
     },
 }

@@ -27,9 +27,9 @@ class R1ProRightArm(ManipulatorModel):
 
     @property
     def init_qpos(self):
-        # More outstretched than the folded home — needed so short TCP (eef z=0.06)
-        # can extend to EgoDex hand targets under OSC.
-        return np.array([0.0, -0.6, 0.0, -0.5, 0.0, 0.4, 0.0])
+        # Mildly outstretched nullspace home (less folded than old [-0.6,-0.5]).
+        # Stronger elbow-out + high nullspace kp fights EE tracking on this demo.
+        return np.array([0.0, -0.35, 0.25, -0.20, 0.0, 0.15, 0.0])
 
     @property
     def base_xpos_offset(self):

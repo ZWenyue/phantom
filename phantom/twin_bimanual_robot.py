@@ -217,8 +217,22 @@ class TwinBimanualRobot:
         self.reset()
         self.robot_base_pos = np.array([0, 0, self.env.env.robot_base_height+self.env.env.robot_base_offset])
 
+        if self.bimanual_setup in ("r1pro", "r1pro_nolimit"):
+            self._configure_r1pro_nullspace(joint_kp=50.0)
+
         if self.bimanual_setup == "r1pro_nolimit":
             self._disable_arm_joint_limits()
+
+    def _configure_r1pro_nullspace(self, joint_kp: float = 50.0) -> None:
+        """Prefer outstretched configs in OSC nullspace (reduces folded-elbow look)."""
+        for robot in self.env.env.robots:
+            ctrl = robot.controller
+            ctrl.nullspace_joint_kp = float(joint_kp)
+            # Keep attractor at the robot's outstretched init_qpos, not whatever
+            # pose the arm drifted to during construction.
+            q_pref = np.array(robot.robot_model.init_qpos, dtype=float)
+            ctrl.update_initial_joints(q_pref)
+        print(f"[r1pro] nullspace joint_kp={joint_kp}, attractor=init_qpos")
 
     def _disable_arm_joint_limits(self) -> None:
         """Remove MuJoCo hinge limits on R1 Pro arm joints (simulation-only experiment)."""
@@ -239,6 +253,13 @@ class TwinBimanualRobot:
         """Reset environment and clear observation history."""
         self.env.reset()
         self.obs_history = deque()
+        # Re-assert outstretched nullspace attractor after reset (init_qpos).
+        if self.bimanual_setup in ("r1pro", "r1pro_nolimit"):
+            for robot in self.env.env.robots:
+                ctrl = robot.controller
+                if not hasattr(ctrl, "nullspace_joint_kp"):
+                    ctrl.nullspace_joint_kp = 50.0
+                ctrl.update_initial_joints(np.array(robot.robot_model.init_qpos, dtype=float))
 
     def close(self):
         """Close the simulation environment."""

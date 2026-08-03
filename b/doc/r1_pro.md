@@ -55,10 +55,12 @@ MuJoCo 仿真中出现数值不稳定（"Nan, Inf or huge value in QACC at DOF 2
 - 左臂：`R1ProLeftArm`（robot 1）
 
 `PhantomBimanual` 环境中 `"r1pro"` / `"r1pro_nolimit"` 基座（both_fwd，配合短 TCP）：
-- Robot 0（右臂）：pos=(-0.28, -0.12, 1.74), rot=(0, 0, pi/2)
-- Robot 1（左臂）：pos=(-0.22, 0.20, 1.56), rot=(0, 0, -pi/2)
+- Robot 0（右臂）：pos=(-0.18, -0.40, 1.70), rot=(0, 0, pi/2)
+- Robot 1（左臂）：pos=(-0.15, 0.42, 1.55), rot=(0, 0, -pi/2)
+- Y 间距约 0.82 m（再宽 tracking 会超 5 cm）；夹爪 tip 间距默认跟人走，可用 `ee_lateral_spread` 外扩渲染间距
+- nolimit 配置默认 `ee_lateral_spread: 0.12`（约 +12 cm），更接近 Kinova 开肩观感；会对不齐人手/物体
 
-配套：`uncouple_pos_ori=True`、`kp=[300,300,300,5,5,5]`（位置优先）、`n_steps_short=80`、更伸展的 `init_qpos`。人手姿态常不可达，等权 ori 增益会把腕关节顶死并拖偏 grip_site。
+配套：`uncouple_pos_ori=True`、位置优先 OSC、`n_steps_short`（limited=80 / nolimit=20）、更伸展的 `init_qpos`，以及 OSC 零空间 `nullspace_joint_kp=50`（默认 10）把姿态往 `init_qpos` 拉，减轻折叠肘观感。人手姿态常不可达时，等权 ori 增益仍会把腕关节顶死并拖偏 grip_site。
 
 实验配置 `egodex_r1pro_bimanual_nolimit.yaml`（`bimanual_setup: r1pro_nolimit`）会在仿真里去掉臂关节限位，用 `kp=[300,300,300,40,40,40]`、`n_steps_short=20`；全 episode 可达 539/539。输出 `*_r1pro_nolimit.*`，不能用于真机。
 

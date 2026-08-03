@@ -24,6 +24,9 @@ gripper: "R1Pro"
 square: false
 epic: true
 bimanual_setup: "r1pro_nolimit"
+# Push L/R EE targets apart for wider overlay look (0 = exact hand tracking).
+# Sandwich hands are ~25 cm apart; ~0.12 m spread approaches Kinova-style open gap.
+ee_lateral_spread: 0.0
 target_hand: "both"
 constrained_hand: false
 depth_for_overlay: false

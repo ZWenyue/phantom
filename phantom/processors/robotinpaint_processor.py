@@ -68,6 +68,9 @@ class RobotInpaintProcessor(BaseProcessor):
         """
         super().__init__(args)
         self.use_depth = self.depth_for_overlay
+        # Extra left/right EE separation for overlay aesthetics (meters).
+        # 0 = track hands exactly; >0 pushes targets apart along L↔R vector.
+        self.ee_lateral_spread = float(getattr(args, "ee_lateral_spread", 0.0) or 0.0)
         self._initialize_robot()
 
     @property
@@ -183,13 +186,17 @@ class RobotInpaintProcessor(BaseProcessor):
 
         for idx in tqdm(range(len(images['human_imgs'])), desc="Processing frames"):
             # Extract robot states for current frame
+            left_pt = data['ee_pts_left'][idx]
+            right_pt = data['ee_pts_right'][idx]
+            if self.ee_lateral_spread > 0 and self.bimanual_setup != "single_arm":
+                left_pt, right_pt = self._apply_ee_lateral_spread(left_pt, right_pt)
             left_state = self._get_robot_state(
-                data['ee_pts_left'][idx], 
+                left_pt,
                 data['ee_oris_left'][idx], 
                 gripper_widths['left'][idx]
             )
             right_state = self._get_robot_state(
-                data['ee_pts_right'][idx], 
+                right_pt,
                 data['ee_oris_right'][idx], 
                 gripper_widths['right'][idx]
             )
@@ -499,6 +506,23 @@ class RobotInpaintProcessor(BaseProcessor):
         
         return np.array(list_gripper_actions), list_gripper_dist
     
+    def _apply_ee_lateral_spread(
+        self, left_pt: np.ndarray, right_pt: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Push L/R targets apart along their connecting vector (overlay aesthetics)."""
+        spread = float(self.ee_lateral_spread)
+        if spread <= 0:
+            return left_pt, right_pt
+        delta = right_pt - left_pt
+        norm = float(np.linalg.norm(delta))
+        if norm < 1e-6:
+            # Hands coincide: fall back to world ±Y
+            direction = np.array([0.0, 1.0, 0.0], dtype=float)
+        else:
+            direction = delta / norm
+        half = 0.5 * spread
+        return left_pt - half * direction, right_pt + half * direction
+
     def _get_robot_state(self, ee_pt: np.ndarray, ori_matrix: np.ndarray, gripper_dist: float) -> RobotState:
         """
         Convert trajectory data to robot state representation.
