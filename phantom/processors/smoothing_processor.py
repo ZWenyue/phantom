@@ -66,6 +66,13 @@ class SmoothingProcessor(BaseProcessor):
         """
         super().__init__(args)
 
+    @property
+    def _action_tag(self) -> str:
+        """NPZ suffix; nolimit reuses the same trajectories as limited r1pro."""
+        if self.bimanual_setup == "r1pro_nolimit":
+            return "r1pro"
+        return self.bimanual_setup
+
     def process_one_demo(self, data_sub_folder: str) -> None:
         """
         Process and smooth trajectories for a single demonstration.
@@ -127,8 +134,8 @@ class SmoothingProcessor(BaseProcessor):
             paths: Paths object containing file locations
         """
         # Load data for both hands
-        actions_left_path = str(paths.actions_left).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
-        actions_right_path = str(paths.actions_right).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
+        actions_left_path = str(paths.actions_left).split(".npz")[0] + f"_{self._action_tag}.npz"
+        actions_right_path = str(paths.actions_right).split(".npz")[0] + f"_{self._action_tag}.npz"
         actions_left = np.load(actions_left_path, allow_pickle=True)
         actions_right = np.load(actions_right_path, allow_pickle=True)
 
@@ -166,7 +173,7 @@ class SmoothingProcessor(BaseProcessor):
             base_path = str(paths.actions_left)
         else:
             base_path = str(paths.actions_right)
-        return base_path.split(".npz")[0] + f"_{self.bimanual_setup}.npz"
+        return base_path.split(".npz")[0] + f"_{self._action_tag}.npz"
 
     def _save_results(self, paths: Paths, smoothed_ee_pts_left: Optional[np.ndarray] = None, 
                       smoothed_ee_oris_left: Optional[np.ndarray] = None, 
@@ -191,7 +198,7 @@ class SmoothingProcessor(BaseProcessor):
         
         # Save left hand trajectories if provided
         if smoothed_ee_pts_left is not None:
-            smoothed_actions_left_path = str(paths.smoothed_actions_left).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
+            smoothed_actions_left_path = str(paths.smoothed_actions_left).split(".npz")[0] + f"_{self._action_tag}.npz"
             np.savez(smoothed_actions_left_path, 
                     ee_pts=smoothed_ee_pts_left, 
                     ee_oris=smoothed_ee_oris_left, 
@@ -199,7 +206,7 @@ class SmoothingProcessor(BaseProcessor):
         
         # Save right hand trajectories if provided
         if smoothed_ee_pts_right is not None:
-            smoothed_actions_right_path = str(paths.smoothed_actions_right).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
+            smoothed_actions_right_path = str(paths.smoothed_actions_right).split(".npz")[0] + f"_{self._action_tag}.npz"
             np.savez(smoothed_actions_right_path, 
                     ee_pts=smoothed_ee_pts_right, 
                     ee_oris=smoothed_ee_oris_right, 

@@ -107,6 +107,13 @@ class ActionProcessor(BaseProcessor):
         else:
             self._process_bimanual(left_sequence, right_sequence, paths)
 
+    @property
+    def _action_tag(self) -> str:
+        """NPZ suffix; nolimit reuses the same trajectories as limited r1pro."""
+        if self.bimanual_setup == "r1pro_nolimit":
+            return "r1pro"
+        return self.bimanual_setup
+
     def _process_single_arm(self, left_sequence: HandSequence, right_sequence: HandSequence, paths) -> None:
         """Process single-arm setup with one target hand."""
         # Select target hand based on configuration
@@ -434,7 +441,7 @@ class ActionProcessor(BaseProcessor):
 
     def _save_hand_actions(self, base_path: str, union_indices: np.ndarray, actions: EEActions) -> None:
         """Save actions for a single hand to NPZ file."""
-        file_path = str(base_path).split(".npz")[0] + f"_{self.bimanual_setup}.npz"
+        file_path = str(base_path).split(".npz")[0] + f"_{self._action_tag}.npz"
         np.savez(
             file_path,
             union_indices=union_indices,

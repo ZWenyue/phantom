@@ -67,7 +67,7 @@ MuJoCo 仿真中出现数值不稳定（"Nan, Inf or huge value in QACC at DOF 2
 使用 R1 Pro 原生平行夹爪（`R1ProGripper`），替代 Robotiq85。
 - 2 个棱柱关节（prismatic），沿 Y 轴对称开合，行程 ±50mm
 - 1 个 actuator 驱动 finger_joint1，通过 equality constraint 耦合 finger_joint2
-- `eef` / `grip_site` 使用几何抓取中心 `pos="0 0 0.06"`（不要用 Robotiq 的 0.155 假长，否则 IK 虽过、夹爪相对人手会系统性偏移）
+- `eef` / `grip_site` 使用几何抓取中心 `pos="0 0 -0.06"`（手指在 −Z；不要用 `+0.06`，那是壳体/近腕一侧，会把腕关节叠到物体上；也不要用 Robotiq 的 0.155 假长）
 - `right_hand` body 使用 identity quat（无旋转），原生夹爪 mesh 朝向已正确
 
 ### 控制器
@@ -90,7 +90,7 @@ python phantom/process_data.py \
 
 ## 当前状态
 
-- TCP 使用几何正确的 eef z=0.06（禁止退回 Robotiq 假长 0.155）
+- TCP 使用几何正确的 eef z=-0.06（手指侧；禁止 +0.06 近腕侧或 Robotiq 假长 0.155）
 - 短 TCP 下必须位置优先 OSC；probe 上 `kp pos=300/ori=5` 可达 mm 级跟踪
 - 判据以夹爪是否叠在人手上为准
 - 调基座 / OSC 增益前先跑探针：见 [`probe_r1pro_tcp.md`](probe_r1pro_tcp.md)（`b/probe_r1pro_tcp.py`）
