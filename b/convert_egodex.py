@@ -236,6 +236,34 @@ def generate_hand_det_pkl(
     return hand_det
 
 
+def export_camera_poses(hdf5_path: str, output_dir: Path) -> int:
+    """Write the per-frame camera trajectory to camera_poses.npz.
+
+    EgoDex records the Vision Pro head pose, so the camera-to-world transform is known
+    exactly for every frame. ActionProcessor picks this file up and uses a per-frame
+    T_cam2robot instead of a single fixed extrinsic; without it, head motion is folded
+    into the extracted hand trajectory (~25 mm median error on EgoDex, more on the
+    resting hand of a bimanual demo).
+
+    Args:
+        hdf5_path: Source EgoDex episode.
+        output_dir: Phantom demo directory to write into.
+
+    Returns:
+        Number of camera poses written.
+    """
+    with h5py.File(hdf5_path, "r") as f:
+        T_world_cam = f["transforms/camera"][:]
+        K = f["camera/intrinsic"][:]
+
+    np.savez_compressed(
+        output_dir / "camera_poses.npz",
+        T_world_cam=np.asarray(T_world_cam, dtype=np.float64),
+        intrinsic=np.asarray(K, dtype=np.float64),
+    )
+    return len(T_world_cam)
+
+
 def convert_one_episode(
     hdf5_path: Path,
     video_path: Path,
@@ -261,6 +289,9 @@ def convert_one_episode(
     pkl_path = output_dir / "hand_det.pkl"
     with open(pkl_path, "wb") as f:
         pickle.dump(hand_det, f)
+
+    # Export the per-frame camera trajectory for per-frame extrinsics
+    export_camera_poses(str(hdf5_path), output_dir)
 
     return True
 
@@ -341,7 +372,14 @@ def main() -> None:
         output_dir = output_base / str(idx)
 
         if output_dir.exists() and not args.overwrite:
-            print(f"  [{idx}] Skipping {episode_id}: already exists")
+            # Backfill camera_poses.npz into demos converted before it existed, so
+            # per-frame extrinsics work without a full re-conversion.
+            if not (output_dir / "camera_poses.npz").exists():
+                n_poses = export_camera_poses(str(hdf5_path), output_dir)
+                print(f"  [{idx}] Skipping {episode_id}: already exists "
+                      f"(backfilled {n_poses} camera poses)")
+            else:
+                print(f"  [{idx}] Skipping {episode_id}: already exists")
             converted += 1
             continue
 

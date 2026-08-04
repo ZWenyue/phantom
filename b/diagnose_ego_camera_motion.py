@@ -21,8 +21,9 @@ or bone-length variance, which the proposed objective directly minimizes).
 Blocks
 ------
   [0] Convention check    Are transforms/camera and kpts_3d in the frame we assume?
-  [1] Camera motion       How much does the head actually move?
-  [2] Apparent vs true    Camera-frame hand motion vs world-frame hand motion.  (GT only)
+  [1] Camera motion       How much does the head move, and can monocular SLAM work on it?
+  [2] Apparent vs true    Camera-frame vs world-frame hand motion, stratified by hand
+                          speed and by idle/active hand.                        (GT only)
   [3] Fixed-extrinsics    Oracle hand pose + fixed T_cam2robot -> trajectory error. (GT only)
   [4] HaMeR cam-frame     MPJPE / root-relative / PA / XY-vs-Z split.           (needs HaMeR)
   [5] World-frame split   const bias | low-freq drift | high-freq jitter.       (needs HaMeR)
@@ -199,6 +200,25 @@ def rot_angle_deg(R: np.ndarray) -> np.ndarray:
     return np.degrees(np.arccos(np.clip((tr - 1.0) / 2.0, -1.0, 1.0)))
 
 
+def hand_speed(world: np.ndarray, fps: float) -> np.ndarray:
+    """(T,) world-frame hand speed in m/s, averaged over joints, first frame replicated.
+
+    Hand speed turns out to be the covariate that everything depends on: camera-motion
+    contamination is negligible while the hand is transporting and dominant while it is
+    hovering, grasping or resting. Never aggregate across speeds without stratifying.
+    """
+    v = np.linalg.norm(np.diff(world, axis=0), axis=-1).mean(1) * fps
+    return np.concatenate([v[:1], v]) if len(v) else np.zeros(len(world))
+
+
+# Speed strata in m/s. The slowest bin is where manipulation precision actually matters
+# (approach, grasp, release, fine alignment) and where the camera dominates.
+SPEED_BINS: List[Tuple[float, float]] = [(0.0, 0.05), (0.05, 0.15), (0.15, np.inf)]
+
+# A hand whose world-frame wrist travels less than this over the episode is idle.
+IDLE_EXTENT_M = 0.05
+
+
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
@@ -362,22 +382,56 @@ def block0_convention(ep: Episode) -> dict:
 # ---------------------------------------------------------------------------
 
 def block1_camera_motion(ep: Episode, fps: float) -> dict:
-    """How much does the head actually move? Pure GT statistics."""
+    """How much does the head actually move, and can monocular SLAM work on it?
+
+    The SLAM conditioning numbers matter as much as the motion magnitudes. Monocular
+    structure-from-motion needs translation parallax that competes with rotation-induced
+    flow; a head that wobbles in place and returns to where it started provides almost
+    none, which is the classic degenerate configuration:
+
+      net_over_path            -- ~0 means the camera oscillates rather than travels.
+      max_baseline_over_depth  -- triangulation parallax. Below ~0.05 is ill-conditioned,
+                                  and metric scale recovery has essentially no signal.
+      rot_over_trans_flow      -- rotation-induced image flow divided by translation-induced
+                                  flow. Above ~3 means rotation dominates and depth is
+                                  poorly observable.
+    """
     t = ep.T_c2w[:, :3, 3]
     R = ep.T_c2w[:, :3, :3]
     dt = np.diff(t, axis=0)
     dR = np.einsum("nij,nkj->nik", R[1:], R[:-1])
     lin = np.linalg.norm(dt, axis=1) * fps           # m/s
     ang = rot_angle_deg(dR) * fps                    # deg/s
+    path = float(np.linalg.norm(dt, axis=1).sum())
+    net = float(np.linalg.norm(t[-1] - t[0]))
+
+    # Scene depth proxy: median GT wrist depth in the camera frame.
+    T_w2c = np.linalg.inv(ep.T_c2w)
+    depths = [float(np.median(transform_points(T_w2c, ep.gt_world[s])[ep.gt_valid[s], 0, 2]))
+              for s in ("left", "right") if ep.gt_valid[s].any()]
+    Z = float(np.median(depths)) if depths else float("nan")
+    max_baseline = float(np.linalg.norm(t[:, None, :] - t[None, :, :], axis=-1).max())
+
+    d_theta = np.radians(rot_angle_deg(dR))                      # rad/frame
+    trans_flow = np.linalg.norm(dt, axis=1) / max(Z, 1e-6)       # rad/frame at depth Z
+    rot_over_trans = float(np.median(d_theta / np.maximum(trans_flow, 1e-9)))
+
     return {
         "n_frames": ep.n_frames,
         "duration_s": round(ep.n_frames / fps, 2),
-        "path_length_m": round(float(np.linalg.norm(dt, axis=1).sum()), 4),
-        "net_displacement_m": round(float(np.linalg.norm(t[-1] - t[0])), 4),
+        "path_length_m": round(path, 4),
+        "net_displacement_m": round(net, 4),
+        "net_over_path": round(net / max(path, 1e-9), 4),
         "translation_extent_m": round(float(np.linalg.norm(t.max(0) - t.min(0))), 4),
         "lin_speed_mps": {"mean": round(float(lin.mean()), 4), "p95": round(float(np.percentile(lin, 95)), 4)},
         "ang_speed_dps": {"mean": round(float(ang.mean()), 3), "p95": round(float(np.percentile(ang, 95)), 3)},
         "total_rotation_deg": round(float(rot_angle_deg(R[0].T @ R[-1])), 2),
+        "slam_conditioning": {
+            "scene_depth_m": round(Z, 4),
+            "max_baseline_m": round(max_baseline, 4),
+            "max_baseline_over_depth": round(max_baseline / max(Z, 1e-6), 4),
+            "rot_over_trans_flow_median": round(rot_over_trans, 2),
+        },
     }
 
 
@@ -386,6 +440,11 @@ def block2_apparent_vs_true(ep: Episode, fps: float) -> dict:
 
     The camera-frame signal is what HaMeR sees and what the current pipeline treats as
     hand motion. If |d hand_cam| >> |d hand_world|, most of that signal is the camera.
+
+    Stratified by true hand speed, because the episode-level ratio is bimodal and its
+    median is meaningless: a transporting hand swamps the camera while a hovering or
+    resting hand is swamped by it. Idle hands are flagged separately for the same reason
+    -- in a bimanual setup their action labels can be almost pure camera motion.
     """
     T_w2c = np.linalg.inv(ep.T_c2w)
     out = {}
@@ -400,9 +459,28 @@ def block2_apparent_vs_true(ep: Episode, fps: float) -> dict:
         v_world = np.linalg.norm(np.diff(world, axis=0), axis=-1)[pair] * fps   # (M,21)
         v_cam = np.linalg.norm(np.diff(cam, axis=0), axis=-1)[pair] * fps
         # Per-frame ratio of apparent to true speed, aggregated over joints.
-        ratio = v_cam.mean(1) / np.maximum(v_world.mean(1), 1e-6)
+        tv, av = v_world.mean(1), v_cam.mean(1)
+        ratio = av / np.maximum(tv, 1e-6)
+
+        strata = {}
+        for lo, hi in SPEED_BINS:
+            m = (tv >= lo) & (tv < hi)
+            if m.sum() < 5:
+                continue
+            strata[f"speed_{lo:g}_{hi:g}"] = {
+                "n_frames": int(m.sum()),
+                "true_mps": round(float(tv[m].mean()), 4),
+                "apparent_mps": round(float(av[m].mean()), 4),
+                "ratio_median": round(float(np.median(ratio[m])), 3),
+                "frac_camera_dominates": round(float((ratio[m] > 2.0).mean()), 3),
+            }
+
+        wrist = world[valid][:, 0]
+        extent = float(np.linalg.norm(wrist.max(0) - wrist.min(0)))
         out[side] = {
             "n_valid_frames": int(valid.sum()),
+            "hand_extent_m": round(extent, 4),
+            "is_idle_hand": bool(extent < IDLE_EXTENT_M),
             "true_speed_mps": round(float(v_world.mean()), 4),
             "apparent_speed_mps": round(float(v_cam.mean()), 4),
             "apparent_over_true": {
@@ -410,6 +488,7 @@ def block2_apparent_vs_true(ep: Episode, fps: float) -> dict:
                 "p90": round(float(np.percentile(ratio, 90)), 3),
             },
             "frac_frames_camera_dominates": round(float((ratio > 2.0).mean()), 3),
+            "by_speed": strata,
         }
     return out
 
@@ -585,7 +664,7 @@ def block5_world_error_split(ep: Episode, sigmas: Sequence[float]) -> dict:
     return out
 
 
-def block6_smoothing_ceiling(ep: Episode, sigmas: Sequence[float]) -> dict:
+def block6_smoothing_ceiling(ep: Episode, sigmas: Sequence[float], fps: float) -> dict:
     """Does smoothing in the WORLD frame beat smoothing in the CAMERA frame?
 
     This is the core hypothesis of doc/slam_hand_pose.md, tested with GT camera poses
@@ -598,6 +677,10 @@ def block6_smoothing_ceiling(ep: Episode, sigmas: Sequence[float]) -> dict:
 
     Both are scored as world-frame MPJPE against GT. If world_frame does not win, the
     premise of the whole project fails and no amount of optimizer engineering saves it.
+
+    Scored overall AND on slow frames only. The two frames are nearly equivalent while
+    the hand is transporting, so a pooled number dilutes the comparison; the slow frames
+    are both where the frames diverge most and where manipulation precision matters.
     """
     out = {}
     for side in ("left", "right"):
@@ -607,12 +690,22 @@ def block6_smoothing_ceiling(ep: Episode, sigmas: Sequence[float]) -> dict:
             continue
         mask, gt_world, ham_cam, T_c2w = p
         ham_world = transform_points(T_c2w, ham_cam)
+        speed = hand_speed(gt_world, fps)
+        slow_thresh = SPEED_BINS[0][1]
 
-        def score(pred: np.ndarray, sl: slice) -> Tuple[float, float]:
+        def score(pred: np.ndarray, sl: slice) -> Dict[str, Tuple[float, int]]:
+            """Weighted (error, count) for all frames and for slow frames only."""
             e = pred - gt_world[sl]
-            raw = float(np.linalg.norm(e, axis=-1).mean())
-            cor = float(np.linalg.norm(e - e.mean(0, keepdims=True), axis=-1).mean())
-            return raw, cor
+            cor = e - e.mean(0, keepdims=True)
+            slow = speed[sl] < slow_thresh
+            res = {
+                "raw": (float(np.linalg.norm(e, axis=-1).mean()) * (sl.stop - sl.start), sl.stop - sl.start),
+                "cor": (float(np.linalg.norm(cor, axis=-1).mean()) * (sl.stop - sl.start), sl.stop - sl.start),
+            }
+            n_slow = int(slow.sum())
+            res["cor_slow"] = ((float(np.linalg.norm(cor[slow], axis=-1).mean()) * n_slow, n_slow)
+                               if n_slow else (0.0, 0))
+            return res
 
         runs = contiguous_runs(mask, min_len=15)
         if not runs:
@@ -621,36 +714,49 @@ def block6_smoothing_ceiling(ep: Episode, sigmas: Sequence[float]) -> dict:
 
         curves = {"cam_frame": {}, "world_frame": {}}
         for sg in sigmas:
-            acc = {"cam_frame": [[], []], "world_frame": [[], []]}
+            acc = {k: {m: [0.0, 0] for m in ("raw", "cor", "cor_slow")}
+                   for k in ("cam_frame", "world_frame")}
             for a, b in runs:
                 sl = slice(a, b)
-                w = b - a
                 cam_s = transform_points(T_c2w[sl], gaussian_lowpass(ham_cam[sl], sg))
                 wld_s = gaussian_lowpass(ham_world[sl], sg)
                 for key, pred in (("cam_frame", cam_s), ("world_frame", wld_s)):
-                    raw, cor = score(pred, sl)
-                    acc[key][0].append(raw * w)
-                    acc[key][1].append(cor * w)
-            tw = sum(b - a for a, b in runs)
+                    for metric, (tot, cnt) in score(pred, sl).items():
+                        acc[key][metric][0] += tot
+                        acc[key][metric][1] += cnt
             for key in curves:
+                a_k = acc[key]
                 curves[key][f"sigma_{sg:g}f"] = {
-                    "w_mpjpe_mm": mm(sum(acc[key][0]) / tw),
-                    "w_mpjpe_offset_corrected_mm": mm(sum(acc[key][1]) / tw),
+                    "w_mpjpe_mm": mm(a_k["raw"][0] / max(a_k["raw"][1], 1)),
+                    "w_mpjpe_offset_corrected_mm": mm(a_k["cor"][0] / max(a_k["cor"][1], 1)),
+                    "w_mpjpe_slow_frames_mm": (mm(a_k["cor_slow"][0] / a_k["cor_slow"][1])
+                                               if a_k["cor_slow"][1] else None),
+                    "n_slow_frames": a_k["cor_slow"][1],
                 }
 
-        def best(key: str) -> dict:
-            items = curves[key]
-            k = min(items, key=lambda s: items[s]["w_mpjpe_offset_corrected_mm"])
+        def best(key: str, metric: str) -> dict:
+            items = {k: v for k, v in curves[key].items() if v[metric] is not None}
+            if not items:
+                return {}
+            k = min(items, key=lambda s: items[s][metric])
             return {"sigma": k, **items[k]}
 
-        b_cam, b_wld = best("cam_frame"), best("world_frame")
+        b_cam, b_wld = best("cam_frame", "w_mpjpe_offset_corrected_mm"), best("world_frame", "w_mpjpe_offset_corrected_mm")
+        s_cam = best("cam_frame", "w_mpjpe_slow_frames_mm")
+        s_wld = best("world_frame", "w_mpjpe_slow_frames_mm")
         base = curves["world_frame"][f"sigma_{sigmas[0]:g}f"] if sigmas[0] == 0 else None
+
+        def delta(w: dict, c: dict, metric: str) -> Optional[float]:
+            if not w or not c or w.get(metric) is None or c.get(metric) is None:
+                return None
+            return round(w[metric] - c[metric], 2)
+
         out[side] = {
             "curves": curves,
             "best_cam_frame": b_cam,
             "best_world_frame": b_wld,
-            "world_minus_cam_mm": round(
-                b_wld["w_mpjpe_offset_corrected_mm"] - b_cam["w_mpjpe_offset_corrected_mm"], 2),
+            "world_minus_cam_mm": delta(b_wld, b_cam, "w_mpjpe_offset_corrected_mm"),
+            "world_minus_cam_slow_frames_mm": delta(s_wld, s_cam, "w_mpjpe_slow_frames_mm"),
             "unsmoothed_mm": base["w_mpjpe_offset_corrected_mm"] if base else None,
         }
     return out
@@ -691,11 +797,24 @@ def block7_bone_lengths(ep: Episode) -> dict:
 # Aggregation and reporting
 # ---------------------------------------------------------------------------
 
-def _collect(per_ep: List[dict], path: Sequence[str]) -> List[float]:
-    """Pull a numeric leaf from every episode/side, skipping missing entries."""
+def _collect(per_ep: List[dict], path: Sequence[str], only: str = "all") -> List[float]:
+    """Pull a numeric leaf from every episode/side, skipping missing entries.
+
+    Args:
+        only: "all", "idle" or "active" -- restrict to hands classified by block 2.
+              Aggregating idle and active hands together produces a bimodal mixture
+              whose median means nothing, so most callers should pick a side.
+    """
     vals = []
     for rec in per_ep:
         for side in ("left", "right"):
+            if only != "all":
+                av = rec.get("apparent_vs_true", {})
+                av = av.get(side) if isinstance(av, dict) else None
+                if not isinstance(av, dict):
+                    continue
+                if av.get("is_idle_hand", False) != (only == "idle"):
+                    continue
             node = rec.get(path[0], {})
             node = node.get(side) if isinstance(node, dict) else None
             for key in path[1:]:
@@ -703,7 +822,7 @@ def _collect(per_ep: List[dict], path: Sequence[str]) -> List[float]:
                     node = None
                     break
                 node = node.get(key)
-            if isinstance(node, (int, float)):
+            if isinstance(node, (int, float)) and not isinstance(node, bool):
                 vals.append(float(node))
     return vals
 
@@ -727,11 +846,35 @@ def summarize(per_ep: List[dict], sigmas: Sequence[float]) -> dict:
             "ang_speed_dps_mean": stat([c["ang_speed_dps"]["mean"] for c in cam]),
             "path_length_m": stat([c["path_length_m"] for c in cam]),
         },
-        "apparent_over_true_speed_median": stat(
-            _collect(per_ep, ["apparent_vs_true", "apparent_over_true", "median"])),
+        "slam_conditioning": {
+            "net_over_path": stat([c["net_over_path"] for c in cam]),
+            "max_baseline_over_depth": stat([c["slam_conditioning"]["max_baseline_over_depth"] for c in cam]),
+            "rot_over_trans_flow": stat([c["slam_conditioning"]["rot_over_trans_flow_median"] for c in cam]),
+            "scene_depth_m": stat([c["slam_conditioning"]["scene_depth_m"] for c in cam]),
+        },
+        # Idle and active hands behave completely differently; never pool them.
+        "apparent_over_true_speed": {
+            "idle_hands": stat(_collect(per_ep, ["apparent_vs_true", "apparent_over_true", "median"], "idle")),
+            "active_hands": stat(_collect(per_ep, ["apparent_vs_true", "apparent_over_true", "median"], "active")),
+        },
+        "apparent_over_true_by_speed": {
+            f"speed_{lo:g}_{hi:g}": {
+                "ratio_median": stat(_collect(
+                    per_ep, ["apparent_vs_true", "by_speed", f"speed_{lo:g}_{hi:g}", "ratio_median"])),
+                "frac_camera_dominates": stat(_collect(
+                    per_ep, ["apparent_vs_true", "by_speed", f"speed_{lo:g}_{hi:g}", "frac_camera_dominates"])),
+            }
+            for lo, hi in SPEED_BINS
+        },
+        "n_idle_hands": len(_collect(per_ep, ["apparent_vs_true", "n_valid_frames"], "idle")),
+        "n_active_hands": len(_collect(per_ep, ["apparent_vs_true", "n_valid_frames"], "active")),
         "fixed_extrinsics_residual_mm": {
             "all_joints_mean": stat(_collect(per_ep, ["fixed_extrinsics", "residual_all_joints_mm", "mean"])),
             "wrist_mean": stat(_collect(per_ep, ["fixed_extrinsics", "residual_wrist_mm", "mean"])),
+            "idle_hands": stat(_collect(per_ep, ["fixed_extrinsics", "residual_all_joints_mm", "mean"], "idle")),
+            "active_hands": stat(_collect(per_ep, ["fixed_extrinsics", "residual_all_joints_mm", "mean"], "active")),
+            "by_window": {w: stat(_collect(per_ep, ["fixed_extrinsics", "residual_by_window_mm", w]))
+                          for w in ("0.5s", "1.0s", "2.0s", "5.0s")},
         },
         "hamer_camera_frame_mm": {
             "mpjpe": stat(_collect(per_ep, ["hamer_camera_frame", "mpjpe_mm"])),
@@ -755,6 +898,8 @@ def summarize(per_ep: List[dict], sigmas: Sequence[float]) -> dict:
             "best_cam_frame": stat(_collect(per_ep, ["smoothing_ceiling", "best_cam_frame", "w_mpjpe_offset_corrected_mm"])),
             "best_world_frame": stat(_collect(per_ep, ["smoothing_ceiling", "best_world_frame", "w_mpjpe_offset_corrected_mm"])),
             "world_minus_cam": stat(_collect(per_ep, ["smoothing_ceiling", "world_minus_cam_mm"])),
+            "world_minus_cam_slow_frames": stat(
+                _collect(per_ep, ["smoothing_ceiling", "world_minus_cam_slow_frames_mm"])),
             "unsmoothed": stat(_collect(per_ep, ["smoothing_ceiling", "unsmoothed_mm"])),
         },
         "bone_cv": {
@@ -793,16 +938,40 @@ def print_report(summary: dict, per_ep: List[dict], sigmas: Sequence[float]) -> 
     print(f"    lin speed  {g(summary,'camera','lin_speed_mps_mean','mean')} m/s   "
           f"ang speed {g(summary,'camera','ang_speed_dps_mean','mean')} deg/s   "
           f"path {g(summary,'camera','path_length_m','mean')} m")
+    sl = summary.get("slam_conditioning", {})
+    print("    SLAM conditioning:")
+    print(f"      net/path displacement  {g(sl,'net_over_path','median')}   "
+          "(~0 = camera wobbles in place instead of travelling)")
+    print(f"      max baseline / depth   {g(sl,'max_baseline_over_depth','median')}   "
+          "(<0.05 = triangulation ill-conditioned, metric scale has no signal)")
+    print(f"      rotation/translation flow  {g(sl,'rot_over_trans_flow','median')}   "
+          "(>3 = rotation-dominated, depth poorly observable)")
+    print("    -> Both bad => monocular SLAM is in its degenerate regime on this data;")
+    print("       sec 3.1-3.2 of the plan would be building on sand.")
 
     print("\n[2] Apparent (camera-frame) vs true (world-frame) hand speed")
-    print(f"    ratio median = {g(summary,'apparent_over_true_speed_median','median')}   "
-          "(>>1 means the camera-frame signal is mostly camera motion)")
+    ao = summary.get("apparent_over_true_speed", {})
+    print(f"    idle hands   ratio {g(ao,'idle_hands','median')}  (n={summary.get('n_idle_hands')})")
+    print(f"    active hands ratio {g(ao,'active_hands','median')}  (n={summary.get('n_active_hands')})")
+    byspeed = summary.get("apparent_over_true_by_speed", {})
+    for key, val in byspeed.items():
+        print(f"    {key:<18} ratio {g(val,'ratio_median','median')}   "
+              f"camera dominates {g(val,'frac_camera_dominates','median')} of frames")
+    print("    -> The effect is speed-dependent, so a pooled ratio is meaningless. Slow")
+    print("       frames are the grasp/release/alignment moments that decide manipulation.")
 
     print("\n[3] Fixed-extrinsics residual with a PERFECT hand estimator  <-- key motivation")
-    print(f"    all joints  {g(summary,'fixed_extrinsics_residual_mm','all_joints_mean','median')} mm (median ep)")
-    print(f"    wrist       {g(summary,'fixed_extrinsics_residual_mm','wrist_mean','median')} mm")
+    fe = summary.get("fixed_extrinsics_residual_mm", {})
+    print(f"    all joints  {g(fe,'all_joints_mean','median')} mm (median ep)   "
+          f"wrist {g(fe,'wrist_mean','median')} mm")
+    print(f"    idle hands  {g(fe,'idle_hands','median')} mm   "
+          f"active hands {g(fe,'active_hands','median')} mm")
+    bw = fe.get("by_window", {})
+    print("    by window:  " + "   ".join(
+        f"{w}={g(bw, w, 'median')}mm" for w in ("0.5s", "1.0s", "2.0s", "5.0s")))
     print("    -> This is error the current pipeline CANNOT avoid, no matter how good HaMeR is.")
-    print("    -> If < ~10 mm, the camera-motion premise is weak. If > ~50 mm, it is a real bug.")
+    print("    -> Growth with window length = cumulative drift. Compare against your policy's")
+    print("       action-chunk horizon and against grasp tolerance (~5-10 mm).")
 
     if g(summary, "hamer_camera_frame_mm", "mpjpe"):
         print("\n[4] HaMeR camera-frame error")
@@ -830,8 +999,10 @@ def print_report(summary: dict, per_ep: List[dict], sigmas: Sequence[float]) -> 
         print(f"    best cam-frame    {g(sc,'best_cam_frame','median')} mm   (~ current pipeline)")
         print(f"    best world-frame  {g(sc,'best_world_frame','median')} mm   (~ proposed)")
         print(f"    world - cam       {g(sc,'world_minus_cam','median')} mm   (negative = world wins)")
-        print("    -> If this is not clearly negative, the central claim does not hold and")
-        print("       no optimizer engineering will rescue it.")
+        print(f"    world - cam, slow frames only  {g(sc,'world_minus_cam_slow_frames','median')} mm")
+        print("    -> If neither is clearly negative, the central claim does not hold and")
+        print("       no optimizer engineering will rescue it. Expect the slow-frame margin")
+        print("       to be the larger of the two; that is the one worth reporting.")
 
     bc = summary.get("bone_cv", {})
     if bc.get("gt") or bc.get("hamer"):
@@ -934,14 +1105,14 @@ def _look_at_c2w(eye: np.ndarray, target: np.ndarray) -> np.ndarray:
 
 
 def _synth_episode(n: int, moving_camera: bool, with_hamer: bool, seed: int,
-                   fps: float = 30.0) -> Episode:
+                   fps: float = 30.0, static_hand: bool = False) -> Episode:
     """Build an Episode with exactly known GT (and optionally noised 'HaMeR')."""
     rng = np.random.default_rng(seed)
     t = np.arange(n) / fps
     tpl = _synth_hand_template()
 
     # Smooth hand motion in the world frame.
-    ang = 0.5 * np.sin(2 * np.pi * 0.20 * t)
+    ang = np.zeros(n) if static_hand else 0.5 * np.sin(2 * np.pi * 0.20 * t)
     ca, sa = np.cos(ang), np.sin(ang)
     R_hand = np.zeros((n, 3, 3))
     R_hand[:, 0, 0], R_hand[:, 0, 1] = ca, -sa
@@ -952,6 +1123,8 @@ def _synth_episode(n: int, moving_camera: bool, with_hamer: bool, seed: int,
         0.10 * np.sin(2 * np.pi * 0.23 * t),
         0.60 + 0.05 * np.sin(2 * np.pi * 0.11 * t),
     ], axis=1)
+    if static_hand:
+        p_hand = np.repeat([[0.0, 0.0, 0.60]], n, axis=0)
     world = np.einsum("nij,kj->nki", R_hand, tpl) + p_hand[:, None, :]
 
     # Camera: slow drift plus a 2 Hz head bob, gaze locked on the wrist.
@@ -1036,10 +1209,28 @@ def run_selftest(fps: float = 30.0) -> int:
     check("block1 reports nonzero camera motion", cm["path_length_m"] > 0.1,
           f"path={cm['path_length_m']} m, lin={cm['lin_speed_mps']['mean']} m/s")
 
+    scond = cm["slam_conditioning"]
+    check("block1 reports SLAM conditioning",
+          np.isfinite(scond["rot_over_trans_flow_median"]) and scond["max_baseline_over_depth"] > 0,
+          f"baseline/depth={scond['max_baseline_over_depth']} "
+          f"rot/trans={scond['rot_over_trans_flow_median']}")
+
     av = block2_apparent_vs_true(ep_m, fps)["right"]
     check("block2 apparent speed exceeds true speed",
           av["apparent_over_true"]["median"] > 1.0,
           f"ratio median={av['apparent_over_true']['median']} (expect >1)")
+    check("block2 classifies a moving hand as active",
+          av["is_idle_hand"] is False and len(av["by_speed"]) >= 1,
+          f"extent={av['hand_extent_m']} m, strata={list(av['by_speed'])}")
+
+    # An idle hand under a moving camera is the case that matters most: its apparent
+    # motion is almost entirely camera motion, so its action labels are near-pure noise.
+    ep_i = _synth_episode(200, moving_camera=True, with_hamer=False, seed=2, fps=fps,
+                          static_hand=True)
+    av_i = block2_apparent_vs_true(ep_i, fps)["right"]
+    check("block2 flags an idle hand and its inflated ratio",
+          av_i["is_idle_hand"] is True and av_i["apparent_over_true"]["median"] > 3.0,
+          f"extent={av_i['hand_extent_m']} m, ratio={av_i['apparent_over_true']['median']} (expect >3)")
 
     fx_m = block3_fixed_extrinsics(ep_m, fps, [1.0, 2.0])["right"]
     check("block3 moving camera residual is large",
@@ -1067,7 +1258,7 @@ def run_selftest(fps: float = 30.0) -> int:
     check("block5 energy fractions sum to ~1", 0.90 < frac_sum <= 1.01,
           f"sum={round(frac_sum, 3)} (expect 0.90-1.01)")
 
-    b6 = block6_smoothing_ceiling(ep_m, [0, 2, 5, 10, 20])["right"]
+    b6 = block6_smoothing_ceiling(ep_m, [0, 2, 5, 10, 20], fps)["right"]
     check("block6 smoothing helps at all",
           b6["best_world_frame"]["w_mpjpe_offset_corrected_mm"] < b6["unsmoothed_mm"],
           f"unsmoothed={b6['unsmoothed_mm']} -> world={b6['best_world_frame']['w_mpjpe_offset_corrected_mm']} mm")
@@ -1205,7 +1396,7 @@ def main() -> None:
         if has_hamer:
             rec["hamer_camera_frame"] = block4_hamer_camera_frame(ep)
             rec["world_error_split"] = block5_world_error_split(ep, [s for s in sigmas if s > 0])
-            rec["smoothing_ceiling"] = block6_smoothing_ceiling(ep, sigmas)
+            rec["smoothing_ceiling"] = block6_smoothing_ceiling(ep, sigmas, args.fps)
         per_ep.append(rec)
 
         fx = rec["fixed_extrinsics"].get("right") or rec["fixed_extrinsics"].get("left")

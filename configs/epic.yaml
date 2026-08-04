@@ -29,3 +29,8 @@ depth_for_overlay: false
 render: false
 camera_intrinsics: "camera/camera_intrinsics_epic.json"
 camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
+
+# Use per-frame camera poses from the demo's camera_poses.npz when it exists, instead of
+# holding camera_extrinsics fixed for the whole episode. Set false for the fixed-extrinsic
+# ablation baseline. Epic-Kitchens ships no camera poses, so this is currently a no-op there.
+use_per_frame_extrinsics: true

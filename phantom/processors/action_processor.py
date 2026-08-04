@@ -21,8 +21,9 @@ The processor follows this pipeline:
 6. Save processed actions for robot execution
 """
 
-import os 
+import os
 import numpy as np
+from pathlib import Path
 from typing import Tuple, Optional
 from dataclasses import dataclass
 import logging
@@ -78,11 +79,15 @@ class ActionProcessor(BaseProcessor):
         target_hand (str): Which hand to process in single-arm mode ("left"/"right")
         constrained_hand (bool): Whether to use physically constrained hand model
         T_cam2robot (np.ndarray): 4x4 transformation matrix from camera to robot frame
+        use_per_frame_extrinsics (bool): Prefer per-frame camera poses when the demo
+            provides them (see _get_cam2robot). Set False to force the legacy single
+            fixed extrinsic, which is the ablation baseline.
     """
     def __init__(self, args):
-        # Set processing frequency to 15Hz 
-        self.dt = 1/15 
+        # Set processing frequency to 15Hz
+        self.dt = 1/15
         super().__init__(args)
+        self.use_per_frame_extrinsics = getattr(args, "use_per_frame_extrinsics", True)
 
     def process_one_demo(self, data_sub_folder: str) -> None:
         """
@@ -101,11 +106,129 @@ class ActionProcessor(BaseProcessor):
         # Load hand sequence data for both hands
         left_sequence, right_sequence = self._load_sequences(paths)
 
+        # Resolve the camera-to-robot transform for this demo: either one fixed matrix
+        # or one per frame, depending on what the demo provides.
+        n_frames = max(len(left_sequence.kpts_3d), len(right_sequence.kpts_3d))
+        T_cam2robot = self._get_cam2robot(paths, n_frames, data_sub_folder)
+
         # Handle single-arm processing mode
         if self.bimanual_setup == "single_arm":
-            self._process_single_arm(left_sequence, right_sequence, paths)
+            self._process_single_arm(left_sequence, right_sequence, paths, T_cam2robot)
         else:
-            self._process_bimanual(left_sequence, right_sequence, paths)
+            self._process_bimanual(left_sequence, right_sequence, paths, T_cam2robot)
+
+    def _get_cam2robot(self, paths: Paths, n_frames: int, data_sub_folder: str) -> np.ndarray:
+        """
+        Resolve the camera-to-robot transform(s) for one demo.
+
+        The calibration file gives a single T_cam2robot, which is only correct if the
+        camera is rigidly fixed relative to the robot/scene. In egocentric recordings
+        the camera moves with the wearer's head, so applying one fixed transform folds
+        camera motion into the extracted hand trajectory. Measured on EgoDex, that costs
+        ~25 mm of median trajectory error (up to 66 mm) even with a perfect hand pose
+        estimator, and the error accumulates with the length of the window over which
+        the extrinsic is held fixed.
+
+        When the demo supplies per-frame camera-to-world poses we anchor the robot frame
+        to the world using the first frame, so the robot stays fixed in the world while
+        the camera moves:
+
+            T_robot_world = T_cam2robot_init @ inv(T_world_cam[0])
+            T_cam2robot[t] = T_robot_world @ T_world_cam[t]
+
+        By construction T_cam2robot[0] == T_cam2robot_init, so the reference frame and
+        the calibrated robot placement are unchanged; only the later frames are corrected.
+
+        Args:
+            paths: Paths object for this demo.
+            n_frames: Number of frames in the hand sequences.
+            data_sub_folder: Demo folder name, used to locate the raw demo directory.
+
+        Returns:
+            Either a (4, 4) fixed transform or a (n_frames, 4, 4) stack of per-frame
+            transforms. Falls back to the fixed transform whenever per-frame poses are
+            disabled, absent, or unusable.
+        """
+        if not self.use_per_frame_extrinsics:
+            return self.T_cam2robot
+
+        poses_path = paths.camera_poses
+        if not poses_path.exists():
+            # Demos copied into the processed tree before camera_poses.npz existed will
+            # only have it in the raw directory.
+            raw_path = Path(self.data_folder) / str(data_sub_folder) / poses_path.name
+            if raw_path.exists():
+                poses_path = raw_path
+            else:
+                logger.info(
+                    "No per-frame camera poses at %s or %s; using the fixed extrinsic. "
+                    "This folds camera motion into the trajectory for egocentric data.",
+                    paths.camera_poses, raw_path
+                )
+                return self.T_cam2robot
+
+        try:
+            with np.load(poses_path) as data:
+                T_world_cam = np.asarray(data["T_world_cam"], dtype=float)
+        except (OSError, KeyError, ValueError) as e:
+            logger.warning("Could not read %s (%s); using the fixed extrinsic.", poses_path, e)
+            return self.T_cam2robot
+
+        if T_world_cam.ndim != 3 or T_world_cam.shape[1:] != (4, 4) or len(T_world_cam) == 0:
+            logger.warning(
+                "Expected T_world_cam of shape (N, 4, 4) in %s, got %s; using the fixed "
+                "extrinsic.", poses_path, T_world_cam.shape
+            )
+            return self.T_cam2robot
+
+        if not np.isfinite(T_world_cam[0]).all():
+            logger.warning(
+                "First camera pose in %s is not finite, so the robot frame cannot be "
+                "anchored; using the fixed extrinsic.", poses_path
+            )
+            return self.T_cam2robot
+
+        # Align the pose count to the hand sequences.
+        if len(T_world_cam) < n_frames:
+            logger.warning(
+                "Only %d camera poses for %d frames in %s; carrying the last pose forward.",
+                len(T_world_cam), n_frames, poses_path
+            )
+        T_world_cam = self._resize_transform_stack(T_world_cam, n_frames)
+
+        # Carry the last valid pose forward through any non-finite gaps so a single bad
+        # frame cannot poison the whole sequence.
+        bad = ~np.isfinite(T_world_cam).all(axis=(1, 2))
+        if bad.any():
+            logger.warning(
+                "%d/%d camera poses in %s are not finite; carrying the last valid pose "
+                "forward through those frames.", int(bad.sum()), len(bad), poses_path
+            )
+            for i in np.flatnonzero(bad):
+                T_world_cam[i] = T_world_cam[i - 1]
+
+        T_robot_world = self.T_cam2robot @ np.linalg.inv(T_world_cam[0])
+        logger.info("Using %d per-frame camera poses from %s.", len(T_world_cam), poses_path)
+        return T_robot_world @ T_world_cam
+
+    @staticmethod
+    def _resize_transform_stack(T: np.ndarray, n_frames: int) -> np.ndarray:
+        """
+        Truncate or carry-forward-pad a (N, 4, 4) transform stack to exactly n_frames.
+
+        Args:
+            T: Stack of transforms, shape (N, 4, 4).
+            n_frames: Desired number of transforms.
+
+        Returns:
+            Stack of shape (n_frames, 4, 4).
+        """
+        if len(T) == n_frames:
+            return T
+        if len(T) > n_frames:
+            return T[:n_frames]
+        pad = np.repeat(T[-1:], n_frames - len(T), axis=0)
+        return np.concatenate([T, pad], axis=0)
 
     @property
     def _action_tag(self) -> str:
@@ -114,13 +237,14 @@ class ActionProcessor(BaseProcessor):
             return "r1pro"
         return self.bimanual_setup
 
-    def _process_single_arm(self, left_sequence: HandSequence, right_sequence: HandSequence, paths) -> None:
+    def _process_single_arm(self, left_sequence: HandSequence, right_sequence: HandSequence, paths,
+                            T_cam2robot: np.ndarray) -> None:
         """Process single-arm setup with one target hand."""
         # Select target hand based on configuration
         target_sequence = left_sequence if self.target_hand == "left" else right_sequence
-        
+
         # Process the selected hand sequence
-        target_actions = self._process_hand_sequence(target_sequence, self.T_cam2robot)
+        target_actions = self._process_hand_sequence(target_sequence, T_cam2robot)
         
         # Get indices where hand was detected for this sequence
         union_indices = np.where(target_sequence.hand_detected)[0]
@@ -134,11 +258,12 @@ class ActionProcessor(BaseProcessor):
         else:
             self._save_results(paths, union_indices=union_indices, right_actions=target_actions_refined)
 
-    def _process_bimanual(self, left_sequence: HandSequence, right_sequence: HandSequence, paths) -> None:
+    def _process_bimanual(self, left_sequence: HandSequence, right_sequence: HandSequence, paths,
+                          T_cam2robot: np.ndarray) -> None:
         """Process bimanual setup with both hands."""
         # Process both hand sequences
-        left_actions = self._process_hand_sequence(left_sequence, self.T_cam2robot)
-        right_actions = self._process_hand_sequence(right_sequence, self.T_cam2robot)
+        left_actions = self._process_hand_sequence(left_sequence, T_cam2robot)
+        right_actions = self._process_hand_sequence(right_sequence, T_cam2robot)
         
         # Combine detection results using OR logic - frame is valid if either hand detected
         union_indices = np.where(left_sequence.hand_detected | right_sequence.hand_detected)[0]
@@ -184,15 +309,20 @@ class ActionProcessor(BaseProcessor):
         
         Args:
             sequence (HandSequence): Hand keypoint sequence with detection flags
-            T_cam2robot (np.ndarray): 4x4 transformation matrix from camera to robot frame
-            
+            T_cam2robot (np.ndarray): Camera-to-robot transform, either a single (4, 4)
+                matrix or one (4, 4) matrix per frame with shape (N, 4, 4)
+
         Returns:
             EEActions: Processed end-effector positions, orientations, and gripper widths
         """
         # Convert keypoints from camera frame to robot frame coordinates
         kpts_3d_cf = sequence.kpts_3d  # Camera frame keypoints
+        if T_cam2robot.ndim == 3:
+            # Both hands share one camera trajectory, but guard against a hand sequence
+            # of a different length than the one used to build the stack.
+            T_cam2robot = self._resize_transform_stack(T_cam2robot, len(kpts_3d_cf))
         kpts_3d_rf = ActionProcessor._convert_pts_to_robot_frame(
-            kpts_3d_cf, 
+            kpts_3d_cf,
             T_cam2robot
         )
 
@@ -474,20 +604,32 @@ class ActionProcessor(BaseProcessor):
     def _convert_pts_to_robot_frame(skeleton_poses_cf: np.ndarray, T_cam2robot: np.ndarray) -> np.ndarray:
         """
         Convert hand keypoints from camera frame to robot frame coordinates.
-        
+
         Args:
             skeleton_poses_cf (np.ndarray): Hand poses in camera frame, shape (N, 21, 3)
-            T_cam2robot (np.ndarray): 4x4 transformation matrix from camera to robot frame
-            
+            T_cam2robot (np.ndarray): Camera-to-robot transform. Either a single (4, 4)
+                matrix applied to every frame, or a (N, 4, 4) stack applied per frame.
+
         Returns:
             np.ndarray: Hand poses in robot frame, shape (N, 21, 3)
+
+        Raises:
+            ValueError: If a per-frame stack does not have one transform per frame.
         """
         # Convert to homogeneous coordinates by adding ones
         pts_h = np.ones((skeleton_poses_cf.shape[0], skeleton_poses_cf.shape[1], 1))
         skeleton_poses_cf_h = np.concatenate([skeleton_poses_cf, pts_h], axis=-1)
-        
+
         # Apply transformation matrix to convert coordinate frames
-        skeleton_poses_rf_h0 = np.einsum('ij,bpj->bpi', T_cam2robot, skeleton_poses_cf_h)
-        
+        if T_cam2robot.ndim == 2:
+            skeleton_poses_rf_h0 = np.einsum('ij,bpj->bpi', T_cam2robot, skeleton_poses_cf_h)
+        else:
+            if len(T_cam2robot) != len(skeleton_poses_cf):
+                raise ValueError(
+                    f"Expected one transform per frame, got {len(T_cam2robot)} transforms "
+                    f"for {len(skeleton_poses_cf)} frames"
+                )
+            skeleton_poses_rf_h0 = np.einsum('bij,bpj->bpi', T_cam2robot, skeleton_poses_cf_h)
+
         # Remove homogeneous coordinate and return 3D points
         return skeleton_poses_rf_h0[..., :3]

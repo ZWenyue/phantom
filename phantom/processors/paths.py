@@ -40,6 +40,12 @@ class Paths:
         self.hand_detection_data = self.data_path / "hand_det.pkl"
         self.cam_extrinsics_data = self.data_path / "extrinsics.npy"
 
+        # Optional per-frame camera-to-world poses, written by dataset converters
+        # (see b/convert_egodex.py). When present, ActionProcessor uses a per-frame
+        # T_cam2robot instead of a single fixed extrinsic, which matters for
+        # egocentric recordings where the camera moves relative to the scene.
+        self.camera_poses = self.data_path / "camera_poses.npz"
+
         # Depth
         self.depth = self.data_path / "depth.npy"
 

@@ -1,0 +1,2038 @@
+{
+  "args": {
+    "egodex_root": "/mnt/r/DATA/EgoDex/test",
+    "task": "basic_pick_place",
+    "max_episodes": "20",
+    "processed_root": "None",
+    "prefer_3d": "False",
+    "out": "b/out/diag",
+    "fps": "30.0",
+    "gt_conf_thresh": "0.5",
+    "camera_convention": "opencv",
+    "lowpass_sigmas": "[0, 2, 5, 10, 20]",
+    "window_secs": "[0.5, 1.0, 2.0, 5.0]",
+    "plot": "False",
+    "selftest": "False"
+  },
+  "summary": {
+    "n_episodes": 20,
+    "camera": {
+      "lin_speed_mps_mean": {
+        "mean": 0.036,
+        "median": 0.031,
+        "p90": 0.063,
+        "n": 20
+      },
+      "ang_speed_dps_mean": {
+        "mean": 9.052,
+        "median": 6.693,
+        "p90": 16.152,
+        "n": 20
+      },
+      "path_length_m": {
+        "mean": 0.123,
+        "median": 0.103,
+        "p90": 0.214,
+        "n": 20
+      }
+    },
+    "apparent_over_true_speed_median": {
+      "mean": 3.299,
+      "median": 1.021,
+      "p90": 9.108,
+      "n": 36
+    },
+    "fixed_extrinsics_residual_mm": {
+      "all_joints_mean": {
+        "mean": 29.503,
+        "median": 25.115,
+        "p90": 64.245,
+        "n": 36
+      },
+      "wrist_mean": {
+        "mean": 24.941,
+        "median": 19.775,
+        "p90": 52.34,
+        "n": 36
+      }
+    },
+    "hamer_camera_frame_mm": {
+      "mpjpe": null,
+      "root": null,
+      "root_rel_mpjpe": null,
+      "pa_mpjpe": null,
+      "xy_rms": null,
+      "z_rms": null
+    },
+    "world_error_split": {
+      "at_sigma_10f": {
+        "const_frac": null,
+        "drift_frac": null,
+        "jitter_frac": null
+      },
+      "w_mpjpe_mm": null,
+      "w_mpjpe_offset_corrected_mm": null
+    },
+    "smoothing_ceiling_mm": {
+      "best_cam_frame": null,
+      "best_world_frame": null,
+      "world_minus_cam": null,
+      "unsmoothed": null
+    },
+    "bone_cv": {
+      "gt": {
+        "mean": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "n": 36
+      },
+      "hamer": null
+    }
+  },
+  "episodes": [
+    {
+      "episode": "0",
+      "index": 0,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.8110355253212396,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 126,
+        "duration_s": 4.2,
+        "path_length_m": 0.2112,
+        "net_displacement_m": 0.0075,
+        "translation_extent_m": 0.086,
+        "lin_speed_mps": {
+          "mean": 0.0507,
+          "p95": 0.1049
+        },
+        "ang_speed_dps": {
+          "mean": 11.939,
+          "p95": 30.294
+        },
+        "total_rotation_deg": 3.42
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 126,
+          "true_speed_mps": 0.0143,
+          "apparent_speed_mps": 0.1186,
+          "apparent_over_true": {
+            "median": 7.768,
+            "p90": 21.866
+          },
+          "frac_frames_camera_dominates": 0.968
+        },
+        "right": {
+          "n_valid_frames": 126,
+          "true_speed_mps": 0.3638,
+          "apparent_speed_mps": 0.3767,
+          "apparent_over_true": {
+            "median": 1.018,
+            "p90": 3.768
+          },
+          "frac_frames_camera_dominates": 0.144
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 67.79,
+            "rms": 70.87,
+            "p95": 100.28
+          },
+          "residual_wrist_mm": {
+            "mean": 56.51,
+            "p95": 80.91
+          },
+          "residual_by_window_mm": {
+            "0.5s": 15.47,
+            "1.0s": 30.09,
+            "2.0s": 51.08,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0076
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 43.0,
+            "rms": 47.43,
+            "p95": 86.76
+          },
+          "residual_wrist_mm": {
+            "mean": 39.05,
+            "p95": 75.74
+          },
+          "residual_by_window_mm": {
+            "0.5s": 12.69,
+            "1.0s": 22.64,
+            "2.0s": 31.89,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.5261
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8246
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8243
+        }
+      }
+    },
+    {
+      "episode": "1",
+      "index": 1,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9833333333333334,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 160,
+        "duration_s": 5.33,
+        "path_length_m": 0.3597,
+        "net_displacement_m": 0.0091,
+        "translation_extent_m": 0.1374,
+        "lin_speed_mps": {
+          "mean": 0.0679,
+          "p95": 0.1398
+        },
+        "ang_speed_dps": {
+          "mean": 15.311,
+          "p95": 34.842
+        },
+        "total_rotation_deg": 3.12
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 160,
+          "true_speed_mps": 0.0116,
+          "apparent_speed_mps": 0.1442,
+          "apparent_over_true": {
+            "median": 12.247,
+            "p90": 27.499
+          },
+          "frac_frames_camera_dominates": 0.994
+        },
+        "right": {
+          "n_valid_frames": 160,
+          "true_speed_mps": 0.3454,
+          "apparent_speed_mps": 0.3363,
+          "apparent_over_true": {
+            "median": 0.909,
+            "p90": 6.071
+          },
+          "frac_frames_camera_dominates": 0.27
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 82.56,
+            "rms": 89.13,
+            "p95": 137.36
+          },
+          "residual_wrist_mm": {
+            "mean": 70.39,
+            "p95": 116.71
+          },
+          "residual_by_window_mm": {
+            "0.5s": 17.36,
+            "1.0s": 31.7,
+            "2.0s": 52.63,
+            "5.0s": 79.27
+          },
+          "hand_world_extent_m": 0.0071
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 66.17,
+            "rms": 76.19,
+            "p95": 151.37
+          },
+          "residual_wrist_mm": {
+            "mean": 53.22,
+            "p95": 133.74
+          },
+          "residual_by_window_mm": {
+            "0.5s": 17.24,
+            "1.0s": 27.68,
+            "2.0s": 40.0,
+            "5.0s": 67.07
+          },
+          "hand_world_extent_m": 0.5331
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8244
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8245
+        }
+      }
+    },
+    {
+      "episode": "2",
+      "index": 2,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9413680781758957,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 307,
+        "duration_s": 10.23,
+        "path_length_m": 0.2432,
+        "net_displacement_m": 0.0081,
+        "translation_extent_m": 0.0965,
+        "lin_speed_mps": {
+          "mean": 0.0238,
+          "p95": 0.0902
+        },
+        "ang_speed_dps": {
+          "mean": 4.372,
+          "p95": 10.933
+        },
+        "total_rotation_deg": 1.41
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 307,
+          "true_speed_mps": 0.0077,
+          "apparent_speed_mps": 0.0366,
+          "apparent_over_true": {
+            "median": 6.956,
+            "p90": 16.498
+          },
+          "frac_frames_camera_dominates": 0.915
+        },
+        "right": {
+          "n_valid_frames": 307,
+          "true_speed_mps": 0.1295,
+          "apparent_speed_mps": 0.1248,
+          "apparent_over_true": {
+            "median": 1.016,
+            "p90": 2.44
+          },
+          "frac_frames_camera_dominates": 0.131
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 25.15,
+            "rms": 27.86,
+            "p95": 47.69
+          },
+          "residual_wrist_mm": {
+            "mean": 20.16,
+            "p95": 37.2
+          },
+          "residual_by_window_mm": {
+            "0.5s": 3.45,
+            "1.0s": 5.79,
+            "2.0s": 10.33,
+            "5.0s": 23.14
+          },
+          "hand_world_extent_m": 0.0309
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 25.45,
+            "rms": 28.03,
+            "p95": 46.68
+          },
+          "residual_wrist_mm": {
+            "mean": 22.72,
+            "p95": 40.83
+          },
+          "residual_by_window_mm": {
+            "0.5s": 4.0,
+            "1.0s": 6.84,
+            "2.0s": 12.13,
+            "5.0s": 25.7
+          },
+          "hand_world_extent_m": 0.4563
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0,
+          "gt_total_bone_len_m": 0.8443
+        },
+        "right": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.8441
+        }
+      }
+    },
+    {
+      "episode": "3",
+      "index": 3,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9808201058201058,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 144,
+        "duration_s": 4.8,
+        "path_length_m": 0.1017,
+        "net_displacement_m": 0.0075,
+        "translation_extent_m": 0.0416,
+        "lin_speed_mps": {
+          "mean": 0.0213,
+          "p95": 0.0616
+        },
+        "ang_speed_dps": {
+          "mean": 5.536,
+          "p95": 15.479
+        },
+        "total_rotation_deg": 2.35
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 144,
+          "true_speed_mps": 0.0107,
+          "apparent_speed_mps": 0.0466,
+          "apparent_over_true": {
+            "median": 5.263,
+            "p90": 15.778
+          },
+          "frac_frames_camera_dominates": 0.804
+        },
+        "right": {
+          "n_valid_frames": 144,
+          "true_speed_mps": 0.3008,
+          "apparent_speed_mps": 0.2799,
+          "apparent_over_true": {
+            "median": 0.958,
+            "p90": 2.193
+          },
+          "frac_frames_camera_dominates": 0.112
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 28.57,
+            "rms": 31.6,
+            "p95": 53.85
+          },
+          "residual_wrist_mm": {
+            "mean": 23.6,
+            "p95": 43.46
+          },
+          "residual_by_window_mm": {
+            "0.5s": 5.32,
+            "1.0s": 9.67,
+            "2.0s": 16.66,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0046
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 38.09,
+            "rms": 41.61,
+            "p95": 68.92
+          },
+          "residual_wrist_mm": {
+            "mean": 34.52,
+            "p95": 63.03
+          },
+          "residual_by_window_mm": {
+            "0.5s": 6.01,
+            "1.0s": 11.29,
+            "2.0s": 21.1,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.5143
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8161
+        },
+        "right": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.8159
+        }
+      }
+    },
+    {
+      "episode": "4",
+      "index": 4,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.8954189270644967,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 158,
+        "duration_s": 5.27,
+        "path_length_m": 0.1299,
+        "net_displacement_m": 0.0043,
+        "translation_extent_m": 0.0565,
+        "lin_speed_mps": {
+          "mean": 0.0248,
+          "p95": 0.065
+        },
+        "ang_speed_dps": {
+          "mean": 6.158,
+          "p95": 19.0
+        },
+        "total_rotation_deg": 1.85
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 158,
+          "true_speed_mps": 0.0124,
+          "apparent_speed_mps": 0.0473,
+          "apparent_over_true": {
+            "median": 4.02,
+            "p90": 10.8
+          },
+          "frac_frames_camera_dominates": 0.79
+        },
+        "right": {
+          "n_valid_frames": 158,
+          "true_speed_mps": 0.3372,
+          "apparent_speed_mps": 0.3227,
+          "apparent_over_true": {
+            "median": 0.979,
+            "p90": 1.254
+          },
+          "frac_frames_camera_dominates": 0.025
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 30.33,
+            "rms": 34.18,
+            "p95": 60.31
+          },
+          "residual_wrist_mm": {
+            "mean": 24.57,
+            "p95": 47.89
+          },
+          "residual_by_window_mm": {
+            "0.5s": 5.54,
+            "1.0s": 10.35,
+            "2.0s": 18.23,
+            "5.0s": 31.01
+          },
+          "hand_world_extent_m": 0.0087
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 40.81,
+            "rms": 44.89,
+            "p95": 72.75
+          },
+          "residual_wrist_mm": {
+            "mean": 37.37,
+            "p95": 68.58
+          },
+          "residual_by_window_mm": {
+            "0.5s": 5.69,
+            "1.0s": 10.8,
+            "2.0s": 20.6,
+            "5.0s": 41.87
+          },
+          "hand_world_extent_m": 0.5559
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8156
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8156
+        }
+      }
+    },
+    {
+      "episode": "5",
+      "index": 5,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 1.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 47,
+        "duration_s": 1.57,
+        "path_length_m": 0.0503,
+        "net_displacement_m": 0.0203,
+        "translation_extent_m": 0.03,
+        "lin_speed_mps": {
+          "mean": 0.0328,
+          "p95": 0.051
+        },
+        "ang_speed_dps": {
+          "mean": 7.227,
+          "p95": 11.917
+        },
+        "total_rotation_deg": 2.63
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 47,
+          "true_speed_mps": 0.4186,
+          "apparent_speed_mps": 0.4012,
+          "apparent_over_true": {
+            "median": 0.955,
+            "p90": 1.042
+          },
+          "frac_frames_camera_dominates": 0.0
+        },
+        "right": null
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 15.85,
+            "rms": 17.03,
+            "p95": 26.79
+          },
+          "residual_wrist_mm": {
+            "mean": 12.44,
+            "p95": 20.83
+          },
+          "residual_by_window_mm": {
+            "0.5s": 6.03,
+            "1.0s": 11.46,
+            "2.0s": null,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.2736
+        },
+        "right": null
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.7997
+        },
+        "right": null
+      }
+    },
+    {
+      "episode": "6",
+      "index": 6,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.4690220174091142,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 93,
+        "duration_s": 3.1,
+        "path_length_m": 0.1172,
+        "net_displacement_m": 0.0225,
+        "translation_extent_m": 0.0574,
+        "lin_speed_mps": {
+          "mean": 0.0382,
+          "p95": 0.0955
+        },
+        "ang_speed_dps": {
+          "mean": 12.904,
+          "p95": 41.75
+        },
+        "total_rotation_deg": 5.19
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 93,
+          "true_speed_mps": 0.0136,
+          "apparent_speed_mps": 0.0578,
+          "apparent_over_true": {
+            "median": 5.477,
+            "p90": 31.314
+          },
+          "frac_frames_camera_dominates": 0.739
+        },
+        "right": {
+          "n_valid_frames": 93,
+          "true_speed_mps": 0.2075,
+          "apparent_speed_mps": 0.2228,
+          "apparent_over_true": {
+            "median": 1.024,
+            "p90": 1.488
+          },
+          "frac_frames_camera_dominates": 0.054
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 16.45,
+            "rms": 19.15,
+            "p95": 32.14
+          },
+          "residual_wrist_mm": {
+            "mean": 13.08,
+            "p95": 20.46
+          },
+          "residual_by_window_mm": {
+            "0.5s": 6.19,
+            "1.0s": 10.25,
+            "2.0s": 13.8,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0026
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 18.4,
+            "rms": 20.54,
+            "p95": 34.17
+          },
+          "residual_wrist_mm": {
+            "mean": 13.02,
+            "p95": 26.76
+          },
+          "residual_by_window_mm": {
+            "0.5s": 8.39,
+            "1.0s": 13.37,
+            "2.0s": 17.37,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.2531
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0,
+          "gt_total_bone_len_m": 0.868
+        },
+        "right": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.8689
+        }
+      }
+    },
+    {
+      "episode": "7",
+      "index": 7,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.5,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 113,
+        "duration_s": 3.77,
+        "path_length_m": 0.1107,
+        "net_displacement_m": 0.0474,
+        "translation_extent_m": 0.0657,
+        "lin_speed_mps": {
+          "mean": 0.0297,
+          "p95": 0.0672
+        },
+        "ang_speed_dps": {
+          "mean": 5.109,
+          "p95": 9.89
+        },
+        "total_rotation_deg": 3.88
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 113,
+          "true_speed_mps": 0.2097,
+          "apparent_speed_mps": 0.1965,
+          "apparent_over_true": {
+            "median": 0.933,
+            "p90": 1.356
+          },
+          "frac_frames_camera_dominates": 0.045
+        },
+        "right": {
+          "n_valid_frames": 69,
+          "true_speed_mps": 0.1447,
+          "apparent_speed_mps": 0.1515,
+          "apparent_over_true": {
+            "median": 1.045,
+            "p90": 1.432
+          },
+          "frac_frames_camera_dominates": 0.0
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 20.31,
+            "rms": 22.33,
+            "p95": 38.53
+          },
+          "residual_wrist_mm": {
+            "mean": 18.46,
+            "p95": 37.77
+          },
+          "residual_by_window_mm": {
+            "0.5s": 5.12,
+            "1.0s": 8.15,
+            "2.0s": 11.66,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.3064
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 9.99,
+            "rms": 11.09,
+            "p95": 18.63
+          },
+          "residual_wrist_mm": {
+            "mean": 8.87,
+            "p95": 17.1
+          },
+          "residual_by_window_mm": {
+            "0.5s": 4.04,
+            "1.0s": 5.68,
+            "2.0s": 8.36,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0904
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.8179
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8183
+        }
+      }
+    },
+    {
+      "episode": "8",
+      "index": 8,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9432419432419432,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 99,
+        "duration_s": 3.3,
+        "path_length_m": 0.0309,
+        "net_displacement_m": 0.0058,
+        "translation_extent_m": 0.0148,
+        "lin_speed_mps": {
+          "mean": 0.0095,
+          "p95": 0.0196
+        },
+        "ang_speed_dps": {
+          "mean": 3.005,
+          "p95": 5.603
+        },
+        "total_rotation_deg": 2.17
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 99,
+          "true_speed_mps": 0.2118,
+          "apparent_speed_mps": 0.2089,
+          "apparent_over_true": {
+            "median": 0.984,
+            "p90": 2.168
+          },
+          "frac_frames_camera_dominates": 0.112
+        },
+        "right": {
+          "n_valid_frames": 99,
+          "true_speed_mps": 0.0172,
+          "apparent_speed_mps": 0.0292,
+          "apparent_over_true": {
+            "median": 3.419,
+            "p90": 8.549
+          },
+          "frac_frames_camera_dominates": 0.633
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 7.34,
+            "rms": 7.84,
+            "p95": 12.22
+          },
+          "residual_wrist_mm": {
+            "mean": 7.58,
+            "p95": 12.1
+          },
+          "residual_by_window_mm": {
+            "0.5s": 1.74,
+            "1.0s": 3.02,
+            "2.0s": 4.66,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.2732
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 6.19,
+            "rms": 6.63,
+            "p95": 10.04
+          },
+          "residual_wrist_mm": {
+            "mean": 4.88,
+            "p95": 7.91
+          },
+          "residual_by_window_mm": {
+            "0.5s": 1.63,
+            "1.0s": 2.74,
+            "2.0s": 4.36,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0039
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.8123
+        },
+        "right": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8124
+        }
+      }
+    },
+    {
+      "episode": "9",
+      "index": 9,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9179894179894179,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 63,
+        "duration_s": 2.1,
+        "path_length_m": 0.1991,
+        "net_displacement_m": 0.0185,
+        "translation_extent_m": 0.0919,
+        "lin_speed_mps": {
+          "mean": 0.0963,
+          "p95": 0.1736
+        },
+        "ang_speed_dps": {
+          "mean": 20.376,
+          "p95": 55.348
+        },
+        "total_rotation_deg": 6.92
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 63,
+          "true_speed_mps": 0.0202,
+          "apparent_speed_mps": 0.2203,
+          "apparent_over_true": {
+            "median": 10.747,
+            "p90": 37.21
+          },
+          "frac_frames_camera_dominates": 0.935
+        },
+        "right": {
+          "n_valid_frames": 63,
+          "true_speed_mps": 0.6664,
+          "apparent_speed_mps": 0.6543,
+          "apparent_over_true": {
+            "median": 0.936,
+            "p90": 4.413
+          },
+          "frac_frames_camera_dominates": 0.161
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 62.32,
+            "rms": 66.69,
+            "p95": 103.26
+          },
+          "residual_wrist_mm": {
+            "mean": 51.46,
+            "p95": 84.7
+          },
+          "residual_by_window_mm": {
+            "0.5s": 25.09,
+            "1.0s": 43.24,
+            "2.0s": 61.21,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.01
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 36.4,
+            "rms": 40.12,
+            "p95": 66.76
+          },
+          "residual_wrist_mm": {
+            "mean": 31.6,
+            "p95": 54.97
+          },
+          "residual_by_window_mm": {
+            "0.5s": 19.36,
+            "1.0s": 31.28,
+            "2.0s": 34.99,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.5731
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8244
+        },
+        "right": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.8243
+        }
+      }
+    },
+    {
+      "episode": "10",
+      "index": 10,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9713619713619714,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 143,
+        "duration_s": 4.77,
+        "path_length_m": 0.0688,
+        "net_displacement_m": 0.0043,
+        "translation_extent_m": 0.0245,
+        "lin_speed_mps": {
+          "mean": 0.0145,
+          "p95": 0.0474
+        },
+        "ang_speed_dps": {
+          "mean": 4.697,
+          "p95": 12.966
+        },
+        "total_rotation_deg": 1.91
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 143,
+          "true_speed_mps": 0.0176,
+          "apparent_speed_mps": 0.0356,
+          "apparent_over_true": {
+            "median": 3.415,
+            "p90": 15.358
+          },
+          "frac_frames_camera_dominates": 0.711
+        },
+        "right": {
+          "n_valid_frames": 143,
+          "true_speed_mps": 0.2559,
+          "apparent_speed_mps": 0.2495,
+          "apparent_over_true": {
+            "median": 1.005,
+            "p90": 1.846
+          },
+          "frac_frames_camera_dominates": 0.092
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 10.49,
+            "rms": 11.79,
+            "p95": 20.09
+          },
+          "residual_wrist_mm": {
+            "mean": 9.99,
+            "p95": 18.23
+          },
+          "residual_by_window_mm": {
+            "0.5s": 3.02,
+            "1.0s": 4.78,
+            "2.0s": 5.74,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0437
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 13.1,
+            "rms": 15.27,
+            "p95": 26.71
+          },
+          "residual_wrist_mm": {
+            "mean": 11.96,
+            "p95": 23.52
+          },
+          "residual_by_window_mm": {
+            "0.5s": 3.37,
+            "1.0s": 5.33,
+            "2.0s": 7.69,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.3423
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8121
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8123
+        }
+      }
+    },
+    {
+      "episode": "11",
+      "index": 11,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9687416279253014,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 185,
+        "duration_s": 6.17,
+        "path_length_m": 0.0993,
+        "net_displacement_m": 0.0146,
+        "translation_extent_m": 0.0368,
+        "lin_speed_mps": {
+          "mean": 0.0162,
+          "p95": 0.0454
+        },
+        "ang_speed_dps": {
+          "mean": 4.637,
+          "p95": 11.678
+        },
+        "total_rotation_deg": 3.39
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 147,
+          "true_speed_mps": 0.0235,
+          "apparent_speed_mps": 0.0438,
+          "apparent_over_true": {
+            "median": 2.816,
+            "p90": 8.206
+          },
+          "frac_frames_camera_dominates": 0.671
+        },
+        "right": {
+          "n_valid_frames": 185,
+          "true_speed_mps": 0.2251,
+          "apparent_speed_mps": 0.2285,
+          "apparent_over_true": {
+            "median": 1.039,
+            "p90": 5.756
+          },
+          "frac_frames_camera_dominates": 0.277
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 14.33,
+            "rms": 16.13,
+            "p95": 27.17
+          },
+          "residual_wrist_mm": {
+            "mean": 11.57,
+            "p95": 20.48
+          },
+          "residual_by_window_mm": {
+            "0.5s": 3.0,
+            "1.0s": 4.68,
+            "2.0s": 6.55,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0523
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 19.26,
+            "rms": 21.02,
+            "p95": 33.57
+          },
+          "residual_wrist_mm": {
+            "mean": 18.26,
+            "p95": 31.85
+          },
+          "residual_by_window_mm": {
+            "0.5s": 3.47,
+            "1.0s": 5.66,
+            "2.0s": 9.46,
+            "5.0s": 17.74
+          },
+          "hand_world_extent_m": 0.4238
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8124
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8127
+        }
+      }
+    },
+    {
+      "episode": "12",
+      "index": 12,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9357638888888888,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 96,
+        "duration_s": 3.2,
+        "path_length_m": 0.0464,
+        "net_displacement_m": 0.0112,
+        "translation_extent_m": 0.0214,
+        "lin_speed_mps": {
+          "mean": 0.0147,
+          "p95": 0.0333
+        },
+        "ang_speed_dps": {
+          "mean": 4.58,
+          "p95": 10.677
+        },
+        "total_rotation_deg": 3.83
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 96,
+          "true_speed_mps": 0.0078,
+          "apparent_speed_mps": 0.035,
+          "apparent_over_true": {
+            "median": 4.421,
+            "p90": 16.18
+          },
+          "frac_frames_camera_dominates": 0.842
+        },
+        "right": {
+          "n_valid_frames": 96,
+          "true_speed_mps": 0.3162,
+          "apparent_speed_mps": 0.3255,
+          "apparent_over_true": {
+            "median": 1.016,
+            "p90": 2.28
+          },
+          "frac_frames_camera_dominates": 0.105
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 17.22,
+            "rms": 19.34,
+            "p95": 35.86
+          },
+          "residual_wrist_mm": {
+            "mean": 14.8,
+            "p95": 29.29
+          },
+          "residual_by_window_mm": {
+            "0.5s": 3.73,
+            "1.0s": 7.74,
+            "2.0s": 13.59,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0059
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 21.16,
+            "rms": 23.76,
+            "p95": 44.01
+          },
+          "residual_wrist_mm": {
+            "mean": 19.05,
+            "p95": 38.22
+          },
+          "residual_by_window_mm": {
+            "0.5s": 3.78,
+            "1.0s": 7.11,
+            "2.0s": 13.0,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.3511
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0,
+          "gt_total_bone_len_m": 0.7699
+        },
+        "right": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.7697
+        }
+      }
+    },
+    {
+      "episode": "13",
+      "index": 13,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.998917748917749,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 66,
+        "duration_s": 2.2,
+        "path_length_m": 0.1343,
+        "net_displacement_m": 0.0211,
+        "translation_extent_m": 0.0677,
+        "lin_speed_mps": {
+          "mean": 0.062,
+          "p95": 0.1782
+        },
+        "ang_speed_dps": {
+          "mean": 20.238,
+          "p95": 65.532
+        },
+        "total_rotation_deg": 4.3
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 66,
+          "true_speed_mps": 0.0208,
+          "apparent_speed_mps": 0.2021,
+          "apparent_over_true": {
+            "median": 10.449,
+            "p90": 32.905
+          },
+          "frac_frames_camera_dominates": 0.908
+        },
+        "right": {
+          "n_valid_frames": 66,
+          "true_speed_mps": 0.5685,
+          "apparent_speed_mps": 0.5929,
+          "apparent_over_true": {
+            "median": 0.983,
+            "p90": 2.484
+          },
+          "frac_frames_camera_dominates": 0.154
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 68.66,
+            "rms": 74.24,
+            "p95": 112.09
+          },
+          "residual_wrist_mm": {
+            "mean": 59.02,
+            "p95": 95.28
+          },
+          "residual_by_window_mm": {
+            "0.5s": 19.19,
+            "1.0s": 33.6,
+            "2.0s": 69.9,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0032
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 33.59,
+            "rms": 36.14,
+            "p95": 58.54
+          },
+          "residual_wrist_mm": {
+            "mean": 22.12,
+            "p95": 42.5
+          },
+          "residual_by_window_mm": {
+            "0.5s": 12.55,
+            "1.0s": 20.52,
+            "2.0s": 32.1,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.3937
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0,
+          "gt_total_bone_len_m": 0.8242
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8242
+        }
+      }
+    },
+    {
+      "episode": "14",
+      "index": 14,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 1.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 61,
+        "duration_s": 2.03,
+        "path_length_m": 0.1035,
+        "net_displacement_m": 0.0236,
+        "translation_extent_m": 0.0524,
+        "lin_speed_mps": {
+          "mean": 0.0517,
+          "p95": 0.1238
+        },
+        "ang_speed_dps": {
+          "mean": 15.698,
+          "p95": 41.925
+        },
+        "total_rotation_deg": 6.6
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 61,
+          "true_speed_mps": 0.0132,
+          "apparent_speed_mps": 0.1619,
+          "apparent_over_true": {
+            "median": 12.074,
+            "p90": 33.955
+          },
+          "frac_frames_camera_dominates": 0.983
+        },
+        "right": {
+          "n_valid_frames": 61,
+          "true_speed_mps": 0.4127,
+          "apparent_speed_mps": 0.4095,
+          "apparent_over_true": {
+            "median": 0.928,
+            "p90": 1.596
+          },
+          "frac_frames_camera_dominates": 0.1
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 44.17,
+            "rms": 51.92,
+            "p95": 112.38
+          },
+          "residual_wrist_mm": {
+            "mean": 36.67,
+            "p95": 94.29
+          },
+          "residual_by_window_mm": {
+            "0.5s": 17.21,
+            "1.0s": 29.09,
+            "2.0s": 43.92,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0047
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 25.08,
+            "rms": 27.62,
+            "p95": 46.85
+          },
+          "residual_wrist_mm": {
+            "mean": 19.39,
+            "p95": 37.7
+          },
+          "residual_by_window_mm": {
+            "0.5s": 10.83,
+            "1.0s": 16.95,
+            "2.0s": 25.27,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.291
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0,
+          "gt_total_bone_len_m": 0.8241
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8242
+        }
+      }
+    },
+    {
+      "episode": "15",
+      "index": 15,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 1.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 51,
+        "duration_s": 1.7,
+        "path_length_m": 0.0949,
+        "net_displacement_m": 0.042,
+        "translation_extent_m": 0.0649,
+        "lin_speed_mps": {
+          "mean": 0.0569,
+          "p95": 0.0979
+        },
+        "ang_speed_dps": {
+          "mean": 15.51,
+          "p95": 36.65
+        },
+        "total_rotation_deg": 4.83
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 46,
+          "true_speed_mps": 0.4253,
+          "apparent_speed_mps": 0.404,
+          "apparent_over_true": {
+            "median": 0.988,
+            "p90": 1.193
+          },
+          "frac_frames_camera_dominates": 0.0
+        },
+        "right": null
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 37.8,
+            "rms": 42.17,
+            "p95": 74.82
+          },
+          "residual_wrist_mm": {
+            "mean": 36.01,
+            "p95": 61.62
+          },
+          "residual_by_window_mm": {
+            "0.5s": 18.06,
+            "1.0s": 30.98,
+            "2.0s": null,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.3131
+        },
+        "right": null
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0006,
+          "gt_total_bone_len_m": 0.7999
+        },
+        "right": null
+      }
+    },
+    {
+      "episode": "16",
+      "index": 16,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 1.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 120,
+        "duration_s": 4.0,
+        "path_length_m": 0.1403,
+        "net_displacement_m": 0.0171,
+        "translation_extent_m": 0.075,
+        "lin_speed_mps": {
+          "mean": 0.0354,
+          "p95": 0.0714
+        },
+        "ang_speed_dps": {
+          "mean": 5.747,
+          "p95": 13.049
+        },
+        "total_rotation_deg": 2.81
+      },
+      "apparent_vs_true": {
+        "left": null,
+        "right": {
+          "n_valid_frames": 120,
+          "true_speed_mps": 0.2748,
+          "apparent_speed_mps": 0.2523,
+          "apparent_over_true": {
+            "median": 0.941,
+            "p90": 2.171
+          },
+          "frac_frames_camera_dominates": 0.109
+        }
+      },
+      "fixed_extrinsics": {
+        "left": null,
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 32.5,
+            "rms": 35.88,
+            "p95": 62.69
+          },
+          "residual_wrist_mm": {
+            "mean": 27.49,
+            "p95": 60.85
+          },
+          "residual_by_window_mm": {
+            "0.5s": 5.61,
+            "1.0s": 10.62,
+            "2.0s": 23.38,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.3465
+        }
+      },
+      "bone_lengths": {
+        "left": null,
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8182
+        }
+      }
+    },
+    {
+      "episode": "17",
+      "index": 17,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 1.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 60,
+        "duration_s": 2.0,
+        "path_length_m": 0.05,
+        "net_displacement_m": 0.0271,
+        "translation_extent_m": 0.0324,
+        "lin_speed_mps": {
+          "mean": 0.0254,
+          "p95": 0.0513
+        },
+        "ang_speed_dps": {
+          "mean": 7.316,
+          "p95": 13.484
+        },
+        "total_rotation_deg": 2.09
+      },
+      "apparent_vs_true": {
+        "left": null,
+        "right": {
+          "n_valid_frames": 60,
+          "true_speed_mps": 0.2896,
+          "apparent_speed_mps": 0.2648,
+          "apparent_over_true": {
+            "median": 0.959,
+            "p90": 1.133
+          },
+          "frac_frames_camera_dominates": 0.0
+        }
+      },
+      "fixed_extrinsics": {
+        "left": null,
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 16.36,
+            "rms": 18.06,
+            "p95": 32.71
+          },
+          "residual_wrist_mm": {
+            "mean": 12.74,
+            "p95": 22.48
+          },
+          "residual_by_window_mm": {
+            "0.5s": 6.08,
+            "1.0s": 11.28,
+            "2.0s": 16.36,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.2242
+        }
+      },
+      "bone_lengths": {
+        "left": null,
+        "right": {
+          "gt_bone_cv": 0.0002,
+          "gt_total_bone_len_m": 0.7997
+        }
+      }
+    },
+    {
+      "episode": "18",
+      "index": 18,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9971532091097308,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 92,
+        "duration_s": 3.07,
+        "path_length_m": 0.1021,
+        "net_displacement_m": 0.0237,
+        "translation_extent_m": 0.0421,
+        "lin_speed_mps": {
+          "mean": 0.0337,
+          "p95": 0.0622
+        },
+        "ang_speed_dps": {
+          "mean": 7.349,
+          "p95": 18.088
+        },
+        "total_rotation_deg": 6.97
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 92,
+          "true_speed_mps": 0.0132,
+          "apparent_speed_mps": 0.0591,
+          "apparent_over_true": {
+            "median": 6.874,
+            "p90": 13.383
+          },
+          "frac_frames_camera_dominates": 0.923
+        },
+        "right": {
+          "n_valid_frames": 92,
+          "true_speed_mps": 0.3687,
+          "apparent_speed_mps": 0.3799,
+          "apparent_over_true": {
+            "median": 1.012,
+            "p90": 1.322
+          },
+          "frac_frames_camera_dominates": 0.033
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 24.54,
+            "rms": 25.64,
+            "p95": 37.89
+          },
+          "residual_wrist_mm": {
+            "mean": 17.46,
+            "p95": 27.89
+          },
+          "residual_by_window_mm": {
+            "0.5s": 6.09,
+            "1.0s": 10.62,
+            "2.0s": 18.5,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.011
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 27.5,
+            "rms": 28.79,
+            "p95": 40.22
+          },
+          "residual_wrist_mm": {
+            "mean": 24.13,
+            "p95": 35.09
+          },
+          "residual_by_window_mm": {
+            "0.5s": 5.33,
+            "1.0s": 9.26,
+            "2.0s": 19.5,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.3959
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.765
+        },
+        "right": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.7649
+        }
+      }
+    },
+    {
+      "episode": "19",
+      "index": 19,
+      "has_hamer": false,
+      "convention": {
+        "assumed": {
+          "in_image_frac": 0.9169129720853859,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        },
+        "flipped": {
+          "in_image_frac": 0.0,
+          "reproj_median_px_after_similarity_fit": null,
+          "fitted_pixel_scale": null
+        }
+      },
+      "camera_motion": {
+        "n_frames": 145,
+        "duration_s": 4.83,
+        "path_length_m": 0.0604,
+        "net_displacement_m": 0.0081,
+        "translation_extent_m": 0.023,
+        "lin_speed_mps": {
+          "mean": 0.0126,
+          "p95": 0.0375
+        },
+        "ang_speed_dps": {
+          "mean": 3.326,
+          "p95": 10.549
+        },
+        "total_rotation_deg": 1.2
+      },
+      "apparent_vs_true": {
+        "left": {
+          "n_valid_frames": 145,
+          "true_speed_mps": 0.226,
+          "apparent_speed_mps": 0.2284,
+          "apparent_over_true": {
+            "median": 1.018,
+            "p90": 2.462
+          },
+          "frac_frames_camera_dominates": 0.118
+        },
+        "right": {
+          "n_valid_frames": 145,
+          "true_speed_mps": 0.0282,
+          "apparent_speed_mps": 0.0449,
+          "apparent_over_true": {
+            "median": 2.172,
+            "p90": 6.735
+          },
+          "frac_frames_camera_dominates": 0.556
+        }
+      },
+      "fixed_extrinsics": {
+        "left": {
+          "residual_all_joints_mm": {
+            "mean": 8.14,
+            "rms": 9.84,
+            "p95": 20.67
+          },
+          "residual_wrist_mm": {
+            "mean": 7.69,
+            "p95": 20.87
+          },
+          "residual_by_window_mm": {
+            "0.5s": 2.58,
+            "1.0s": 3.55,
+            "2.0s": 4.84,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.2807
+        },
+        "right": {
+          "residual_all_joints_mm": {
+            "mean": 7.04,
+            "rms": 8.55,
+            "p95": 18.62
+          },
+          "residual_wrist_mm": {
+            "mean": 6.04,
+            "p95": 17.06
+          },
+          "residual_by_window_mm": {
+            "0.5s": 2.45,
+            "1.0s": 3.62,
+            "2.0s": 4.4,
+            "5.0s": null
+          },
+          "hand_world_extent_m": 0.0096
+        }
+      },
+      "bone_lengths": {
+        "left": {
+          "gt_bone_cv": 0.0003,
+          "gt_total_bone_len_m": 0.8125
+        },
+        "right": {
+          "gt_bone_cv": 0.0001,
+          "gt_total_bone_len_m": 0.8126
+        }
+      }
+    }
+  ]
+}

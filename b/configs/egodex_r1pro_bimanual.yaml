@@ -29,6 +29,12 @@ render: false
 camera_intrinsics: "camera/camera_intrinsics_egodex.json"
 camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
 
+# Use the per-frame Vision Pro head poses in camera_poses.npz instead of holding
+# camera_extrinsics fixed for the whole episode. Matters most here: in a bimanual demo
+# the resting hand's apparent motion is 79-99% camera motion. Set false for the
+# fixed-extrinsic ablation baseline.
+use_per_frame_extrinsics: true
+
 # Hand inpainting settings
 inpaint_resolution: 480
 

@@ -29,6 +29,11 @@ render: false
 camera_intrinsics: "camera/camera_intrinsics_egodex.json"
 camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
 
+# Use the per-frame Vision Pro head poses in camera_poses.npz instead of holding
+# camera_extrinsics fixed for the whole episode. Set false for the fixed-extrinsic
+# ablation baseline.
+use_per_frame_extrinsics: true
+
 # Hand inpainting settings
 # E2FGVI works best at low resolution (~240-480p). inpaint_resolution downscales
 # before inpainting and upscales the result back. 0 = use frame size as-is.
