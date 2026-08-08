@@ -76,6 +76,28 @@ bimanual = data["bimanual"][0]            # bool
 
 自动生成 3D 散点图，包含各臂独立视图和双臂合并视图。颜色映射到 Z 轴高度。
 
+### Panda (Franka) bimanual shoulders
+
+```bash
+# Precompute reachable workspace once (world frame, ~1–2 min for 100k samples/arm)
+python b/compute_reachability.py --robot panda --arm both --samples 100000 --no-plot
+
+# Output: b/reachability_panda_bimanual.npz
+# Used by egodex_panda.yaml (use_frantik_ik: true) for target snapping + frantik IK
+```
+
+Run Panda overlay (only `robot_inpaint`; reuses existing hand/action data):
+
+```bash
+bash b/run_process.sh --config egodex_panda --step robot_inpaint
+```
+
+Probe IK accuracy on one demo:
+
+```bash
+python b/probe_frantik_panda.py
+```
+
 ## 在代码中使用
 
 ### 过滤不可达目标

@@ -13,9 +13,9 @@ set -euo pipefail
 # =============================================================================
 
 # ── defaults ──────────────────────────────────────────────────────────────────
-TASK="make_sandwich"
-EGODEX_ROOT="/mnt/r/DATA/EgoDex/test"
-DATA_ROOT="/mnt/r/DATA/EgoDex/test_phantom"
+TASK="basic_pick_place"
+EGODEX_ROOT="/home/a26160/DATA/test"
+DATA_ROOT="/home/a26160/DATA/test_phantom"
 MAX_EPISODES=""
 OVERWRITE=false
 

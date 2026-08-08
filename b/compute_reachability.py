@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
 """
-Compute reachable workspace of R1 Pro arms via MuJoCo FK.
+Compute reachable workspace via MuJoCo FK.
 
-Uniformly samples joint space, computes forward kinematics for each sample,
-and records the end-effector positions. Outputs:
-  1. An .npz file with all reachable EEF positions (and joint configs)
-  2. A 3D scatter plot visualization of the workspace
+Supports:
+  - R1 Pro arms (--robot r1pro, default)
+  - Panda bimanual shoulders setup (--robot panda --bimanual)
 
 Usage:
-    python b/compute_reachability.py --arm left --samples 500000
-    python b/compute_reachability.py --arm right --samples 500000
-    python b/compute_reachability.py --arm both --samples 500000
-
-    # With bimanual base transforms (as in phantom_bimanual.py):
-    python b/compute_reachability.py --arm both --samples 500000 --bimanual
-
-    # Query whether a specific point is reachable:
-    python b/compute_reachability.py --arm left --query 0.1,0.0,-0.3
+    python b/compute_reachability.py --robot r1pro --arm left --samples 500000
+    python b/compute_reachability.py --robot panda --arm both --samples 200000 --bimanual
+    python b/compute_reachability.py --robot panda --arm right --query 0.3,0.1,1.5 --bimanual
 """
 
 import argparse
@@ -61,6 +54,17 @@ ARM_CONFIGS = {
 }
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PHANTOM_DIR = os.path.join(SCRIPT_DIR, "..", "phantom")
+
+PANDA_JOINT_LIMITS = np.array([
+    [-2.8973, 2.8973],
+    [-1.7628, 1.7628],
+    [-2.8973, 2.8973],
+    [-3.0718, -0.0698],
+    [-2.8973, 2.8973],
+    [-0.0175, 3.7525],
+    [-2.8973, 2.8973],
+])
 
 
 def build_arm_xml(arm: str) -> str:
@@ -139,6 +143,74 @@ def sample_joint_space(arm: str, n_samples: int, seed: int = 42) -> np.ndarray:
     return samples
 
 
+def _make_panda_bimanual_env():
+    import sys
+
+    sys.path.insert(0, PHANTOM_DIR)
+    from robosuite.controllers import load_controller_config
+    from robomimic.envs.env_robosuite import EnvRobosuite
+    import robomimic.utils.obs_utils as ObsUtils
+
+    ObsUtils.initialize_obs_utils_with_obs_specs(
+        obs_modality_specs=dict(obs=dict(low_dim=["robot0_eef_pos"], rgb=["zed_image"]))
+    )
+    options = dict(
+        env_name="PhantomBimanual",
+        bimanual_setup="shoulders",
+        robots=["Panda", "Panda"],
+        gripper_types=["Robotiq85Gripper", "Robotiq85Gripper"],
+        controller_configs=load_controller_config(default_controller="OSC_POSE"),
+        camera_heights=240,
+        camera_widths=240,
+        camera_segmentations="instance",
+        direct_gripper_control=True,
+        use_depth_obs=False,
+        camera_pos=np.array([0, 0, 1.5]),
+        camera_quat_wxyz=np.array([1, 0, 0, 0]),
+        camera_sensorsize=np.array([6.0, 6.0]),
+        camera_principalpixel=np.array([0.0, 0.0]),
+        camera_focalpixel=np.array([400.0, 400.0]),
+    )
+    env = EnvRobosuite(
+        **options,
+        render=False,
+        render_offscreen=False,
+        use_image_obs=False,
+        camera_names=["zed"],
+        control_freq=20,
+    )
+    env.reset()
+    return env
+
+
+def compute_fk_panda(arm: str, joint_configs: np.ndarray, env=None) -> np.ndarray:
+    """FK for Panda in Phantom shoulders bimanual world frame (grip_site positions)."""
+    robot_idx = 0 if arm == "right" else 1
+    close_env = False
+    if env is None:
+        env = _make_panda_bimanual_env()
+        close_env = True
+    sim = env.env.sim
+    robot = env.env.robots[robot_idx]
+    site_id = sim.model.site_name2id(f"gripper{robot_idx}_grip_site")
+    positions = np.empty((joint_configs.shape[0], 3), dtype=np.float64)
+    try:
+        for i, q in enumerate(joint_configs):
+            sim.data.qpos[robot.joint_indexes] = q
+            sim.forward()
+            positions[i] = sim.data.site_xpos[site_id].copy()
+    finally:
+        if close_env:
+            env.env.close()
+    return positions
+
+
+def sample_panda_joint_space(n_samples: int, seed: int = 42) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    lo, hi = PANDA_JOINT_LIMITS[:, 0], PANDA_JOINT_LIMITS[:, 1]
+    return rng.uniform(lo, hi, size=(n_samples, 7))
+
+
 def query_reachable(positions: np.ndarray, point: np.ndarray, tol: float = 0.02) -> dict:
     """Check if a query point is within the sampled reachable workspace."""
     dists = np.linalg.norm(positions - point, axis=1)
@@ -206,11 +278,12 @@ def visualize(positions_dict: dict, output_path: str, bimanual: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compute R1 Pro arm reachable workspace")
+    parser = argparse.ArgumentParser(description="Compute arm reachable workspace (MuJoCo FK)")
+    parser.add_argument("--robot", type=str, default="r1pro", choices=["r1pro", "panda"])
     parser.add_argument("--arm", type=str, default="both", choices=["left", "right", "both"])
     parser.add_argument("--samples", type=int, default=500000, help="Number of FK samples")
     parser.add_argument("--bimanual", action="store_true",
-                        help="Apply bimanual base transforms (world frame)")
+                        help="World frame (required for panda; r1pro optional)")
     parser.add_argument("--output", type=str, default=None, help="Output .npz path")
     parser.add_argument("--query", type=str, default=None,
                         help="Query point x,y,z (e.g. 0.1,0.0,-0.3)")
@@ -221,19 +294,28 @@ def main():
     args = parser.parse_args()
 
     arms = ["left", "right"] if args.arm == "both" else [args.arm]
-    output_base = args.output or os.path.join(
-        SCRIPT_DIR, f"reachability_{'bimanual' if args.bimanual else args.arm}")
+    tag = args.robot + ("_bimanual" if args.bimanual or args.robot == "panda" else f"_{args.arm}")
+    output_base = args.output or os.path.join(SCRIPT_DIR, f"reachability_{tag}")
+
+    if args.robot == "panda" and not args.bimanual:
+        print("Note: Panda reachability uses shoulders bimanual world frame (--bimanual implied)")
+        args.bimanual = True
 
     all_positions = {}
     all_joints = {}
+    panda_env = _make_panda_bimanual_env() if args.robot == "panda" else None
 
     for arm in arms:
         print(f"\n{'='*60}")
-        print(f"Computing FK for {arm} arm ({args.samples} samples)...")
+        print(f"[{args.robot}] FK for {arm} arm ({args.samples} samples)...")
         t0 = time.time()
 
-        joints = sample_joint_space(arm, args.samples, seed=args.seed)
-        positions = compute_fk(arm, joints, bimanual=args.bimanual)
+        if args.robot == "panda":
+            joints = sample_panda_joint_space(args.samples, seed=args.seed)
+            positions = compute_fk_panda(arm, joints, env=panda_env)
+        else:
+            joints = sample_joint_space(arm, args.samples, seed=args.seed)
+            positions = compute_fk(arm, joints, bimanual=args.bimanual)
 
         elapsed = time.time() - t0
         print(f"Done in {elapsed:.1f}s ({args.samples / elapsed:.0f} FK/s)")
@@ -253,6 +335,9 @@ def main():
             print(f"\n  Query {point} -> {status}")
             print(f"    Min distance: {result['min_distance']:.4f} m")
             print(f"    Nearest point: {result['nearest_pos']}")
+
+    if panda_env is not None:
+        panda_env.env.close()
 
     # Save
     npz_path = output_base + ".npz"

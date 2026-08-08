@@ -12,19 +12,20 @@ set -euo pipefail
 #   bash b/run_process.sh --step hand2d,action     # multiple steps
 #   bash b/run_process.sh --data-root /path/to/raw # custom input dir
 #   bash b/run_process.sh --config egodex_r1pro_bimanual  # R1 Pro overlay
+#   bash b/run_process.sh --config egodex_panda --step robot_inpaint  # Franka overlay
 #   bash b/run_process.sh --demo-num 0_useful --no-skip   # one episode, force rerun
 #   bash b/run_process.sh --dry-run                # print commands only
 # =============================================================================
 
 # ── defaults ──────────────────────────────────────────────────────────────────
-TASK="make_sandwich_test"
+TASK="basic_pick_place"
 STEP="all"
-NUM_GPUS=4
-NUM_WORKERS=""  # defaults to NUM_GPUS if not set
-CPU_WORKERS=64
-DATA_ROOT="/mnt/r/DATA/EgoDex/test_phantom"
-PROCESSED_ROOT="/mnt/r/DATA/EgoDex/test_phantom_processed"
-CONFIG_NAME="egodex_r1pro_bimanual_nolimit"
+NUM_GPUS=8
+NUM_WORKERS="32"  # defaults to NUM_GPUS if not set
+CPU_WORKERS=32
+DATA_ROOT="/home/a26160/DATA/test_phantom"
+PROCESSED_ROOT="/home/a26160/DATA/test_phantom_processed"
+CONFIG_NAME="egodex"
 DEMO_NUM=""       # if set, only process this episode folder (e.g. 0_useful)
 SKIP_EXISTING="true"
 DRY_RUN=false
@@ -60,6 +61,12 @@ DATA_ARGS="data_root_dir=${DATA_ROOT} processed_data_root_dir=${PROCESSED_ROOT}"
 eval "$(conda shell.bash hook 2>/dev/null)"
 conda activate phantom
 export PYTHONUNBUFFERED=1
+
+# MuJoCo/robosuite headless EGL rendering (required for robot_inpaint)
+export LD_LIBRARY_PATH="/usr/local/nvidia/lib64:${LD_LIBRARY_PATH:-}"
+export __EGL_VENDOR_LIBRARY_DIRS="${HOME}/.local/share/glvnd/egl_vendor.d"
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 run_cmd() {

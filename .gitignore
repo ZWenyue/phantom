@@ -15,4 +15,5 @@ epic/
 
 # b data & binary files
 b/data/
-b/reachanility_results/
+b/reachability_results/
+*.npz

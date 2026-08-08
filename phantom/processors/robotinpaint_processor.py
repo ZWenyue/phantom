@@ -31,6 +31,7 @@ from phantom.processors.base_processor import BaseProcessor
 from phantom.twin_bimanual_robot import TwinBimanualRobot, MujocoCameraParams
 from phantom.twin_robot import TwinRobot
 from phantom.processors.paths import Paths
+from phantom.panda_frantik_ik import PandaFrantikIKSolver, ReachabilityIndex
 
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ class RobotInpaintProcessor(BaseProcessor):
         # Extra left/right EE separation for overlay aesthetics (meters).
         # 0 = track hands exactly; >0 pushes targets apart along L↔R vector.
         self.ee_lateral_spread = float(getattr(args, "ee_lateral_spread", 0.0) or 0.0)
+        self.use_frantik_ik = bool(getattr(args, "use_frantik_ik", False))
+        self.reachability_npz = getattr(args, "reachability_npz", None)
+        self._frantik_solver: Optional[PandaFrantikIKSolver] = None
         self._initialize_robot()
 
     @property
@@ -127,6 +131,21 @@ class RobotInpaintProcessor(BaseProcessor):
                 epic=self.epic,
                 joint_controller=False,  # Use operational-space control
             )
+            if self.use_frantik_ik and self.robot == "Panda":
+                reach = None
+                npz_path = self.reachability_npz or PandaFrantikIKSolver.default_reachability_path()
+                if npz_path and not os.path.isabs(npz_path):
+                    npz_path = os.path.normpath(os.path.join(self.project_folder, npz_path))
+                if npz_path and os.path.isfile(npz_path):
+                    reach = ReachabilityIndex.load(npz_path)
+                    logger.info("Loaded Panda reachability index: %s", npz_path)
+                else:
+                    logger.warning("Panda reachability npz not found (%s); IK runs without snapping", npz_path)
+                self._frantik_solver = PandaFrantikIKSolver(
+                    self.twin_robot.env,
+                    reachability=reach,
+                    snap_unreachable=True,
+                )
 
     def __del__(self):
         """Clean up robot simulation resources."""
@@ -289,9 +308,14 @@ class RobotInpaintProcessor(BaseProcessor):
             }
 
         # Move robot to target state and get simulation results
-        robot_results = self.twin_robot.move_to_target_state(
-            target_state, init=(idx == 0)  # Initialize on first frame
-        )
+        if self._frantik_solver is not None:
+            robot_results = self._move_with_frantik_ik(target_state, idx)
+            if robot_results is None:
+                return None
+        else:
+            robot_results = self.twin_robot.move_to_target_state(
+                target_state, init=(idx == 0)  # Initialize on first frame
+            )
 
         # Validate tracking accuracy to ensure quality
         if self.bimanual_setup == "single_arm":
@@ -337,6 +361,29 @@ class RobotInpaintProcessor(BaseProcessor):
             output[f"{cam}_img"] = (robot_results[f"{cam}_img"] * 255).astype(np.uint8)
 
         return output
+
+    def _move_with_frantik_ik(self, target_state: dict, idx: int) -> Optional[Dict[str, Any]]:
+        """Solve bimanual joint targets with frantik + MuJoCo refinement."""
+        if idx == 0:
+            self._frantik_solver.reset_seeds()
+
+        q_r, q_l, err_r, err_l = self._frantik_solver.solve_bimanual(
+            target_state["pos"][0],
+            target_state["ori_xyzw"][0],
+            target_state["pos"][1],
+            target_state["ori_xyzw"][1],
+        )
+        if q_r is None or q_l is None:
+            print(f"frantik IK failed at frame {idx}")
+            return None
+
+        return self.twin_robot.move_to_joint_positions(
+            q_r,
+            q_l,
+            target_state["gripper_pos"],
+            target_state,
+            ik_errors=(err_r, err_l),
+        )
 
     def _should_skip_processing(self, save_folder: str) -> bool:
         """

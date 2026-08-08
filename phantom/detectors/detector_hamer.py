@@ -443,5 +443,9 @@ class DetectorHamer:
             model_cfg.MODEL.BACKBONE.pop("PRETRAINED_WEIGHTS")
             model_cfg.freeze()
 
-        model = HAMER.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
+        # Skip pyrender MeshRenderer: headless boxes often have no EGL devices,
+        # and inference/data processing does not need mesh visualization.
+        model = HAMER.load_from_checkpoint(
+            checkpoint_path, strict=False, cfg=model_cfg, init_renderer=False
+        )
         return model, model_cfg

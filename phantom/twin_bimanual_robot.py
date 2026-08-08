@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np 
 from scipy.spatial.transform import Rotation
 from dataclasses import dataclass
-from typing import Tuple, Union, Any
+from typing import Tuple, Union, Any, Optional
 
 from robosuite.controllers import load_controller_config # type: ignore
 from robosuite.utils.camera_utils import get_real_depth_map # type: ignore
@@ -516,6 +516,61 @@ class TwinBimanualRobot:
                 if self.render:
                     self.env.render()
         return obs
+
+    def move_to_joint_positions(
+        self,
+        q_right: np.ndarray,
+        q_left: np.ndarray,
+        gripper_pos: list[float],
+        target_state: dict,
+        ik_errors: Optional[tuple[float, float]] = None,
+    ) -> dict:
+        """
+        Set arm joint positions directly (frantik IK path) and collect observations.
+
+        Skips OSC arm control; optional ik_errors override epic-frame tracking metrics.
+        """
+        sim = self.env.env.sim
+        sim.data.qpos[self.env.env.robots[0].joint_indexes] = q_right
+        sim.data.qpos[self.env.env.robots[1].joint_indexes] = q_left
+        sim.forward()
+        obs = self.env.get_observation()
+
+        robot_mask = np.squeeze(self.get_robot_mask(obs))
+        gripper_mask = np.squeeze(self.get_gripper_mask(obs))
+        rgb_img = self.get_image(obs)
+        depth_img = self.get_depth_image(obs)
+        robot_pos = obs["robot0_eef_pos"] - self.robot_base_pos
+        joint_pos_right = obs["robot0_joint_pos"]
+        joint_pos_left = obs["robot1_joint_pos"]
+
+        if ik_errors is not None:
+            right_pos_error, left_pos_error = ik_errors
+        elif not self.epic:
+            right_pos_error = np.linalg.norm(obs["robot0_eef_pos"] - self.robot_base_pos - target_state["pos"][0])
+            left_pos_error = np.linalg.norm(obs["robot1_eef_pos"] - self.robot_base_pos - target_state["pos"][1])
+        else:
+            right_pos_error = np.linalg.norm(
+                obs["robot0_eef_pos"] - self.base_T_1[:3, 3] - self.base_T_1[:3, :3] @ target_state["pos"][0]
+            )
+            left_pos_error = np.linalg.norm(
+                obs["robot1_eef_pos"] - self.base_T_1[:3, 3] - self.base_T_1[:3, :3] @ target_state["pos"][1]
+            )
+
+        output = {
+            "robot_mask": robot_mask,
+            "gripper_mask": gripper_mask,
+            "rgb_img": rgb_img,
+            "depth_img": depth_img,
+            "robot_pos": robot_pos,
+            "left_pos_err": left_pos_error,
+            "right_pos_err": right_pos_error,
+            "joint_pos_left": joint_pos_left,
+            "joint_pos_right": joint_pos_right,
+        }
+        for cam in self.debug_cameras:
+            output[f"{cam}_img"] = self.get_camera_image(obs, cam)
+        return output
     
     def get_proprioception(self, obs: dict) -> np.ndarray:
         """
