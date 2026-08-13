@@ -16,6 +16,9 @@ class ProcessingMode(Enum):
     HAND3D = "hand3d"
     HAND_SEGMENTATION = "hand_segmentation"
     ARM_SEGMENTATION = "arm_segmentation"
+    INTENT = "intent"
+    STAGEB = "stageb"
+    RETARGET_INPAINT = "retarget_inpaint"
     ACTION = "action"
     SMOOTHING = "smoothing"
     HAND_INPAINT = "hand_inpaint"
@@ -28,9 +31,12 @@ PROCESSING_ORDER = [
     "arm_segmentation",
     "hand_segmentation",
     "hand3d",
+    "intent",
+    "stageb",
     "action",
     "smoothing",
     "hand_inpaint",
+    "retarget_inpaint",
     "robot_inpaint",
 ]
 
@@ -38,9 +44,12 @@ PROCESSING_ORDER_EPIC = [
     "bbox",
     "hand2d",
     "arm_segmentation",
+    "intent",
+    "stageb",
     "action",
     "smoothing",
     "hand_inpaint",
+    "retarget_inpaint",
     "robot_inpaint",
 ]
 
@@ -157,27 +166,54 @@ def process_all_demos_parallel(cfg: DictConfig, processor_classes: dict) -> None
             delayed(processor.process_one_demo)(data_sub_folder) for data_sub_folder in all_data_folders
         )
 
+# mode -> (module path, class name). Imported lazily so that a broken/heavy
+# dependency for one processor (e.g. detectron2/mmpose for hand stages) does not
+# block running an unrelated mode (e.g. `intent`).
+PROCESSOR_REGISTRY = {
+    "bbox": ("phantom.processors.bbox_processor", "BBoxProcessor"),
+    "hand2d": ("phantom.processors.hand_processor", "Hand2DProcessor"),
+    "hand3d": ("phantom.processors.hand_processor", "Hand3DProcessor"),
+    "hand_segmentation": ("phantom.processors.segmentation_processor", "HandSegmentationProcessor"),
+    "arm_segmentation": ("phantom.processors.segmentation_processor", "ArmSegmentationProcessor"),
+    "action": ("phantom.processors.action_processor", "ActionProcessor"),
+    "intent": ("phantom.processors.intent_processor", "IntentProcessor"),
+    "stageb": ("phantom.processors.stageb_processor", "StageBProcessor"),
+    "retarget_inpaint": ("phantom.processors.retarget_inpaint_processor", "RetargetInpaintProcessor"),
+    "smoothing": ("phantom.processors.smoothing_processor", "SmoothingProcessor"),
+    "robot_inpaint": ("phantom.processors.robotinpaint_processor", "RobotInpaintProcessor"),
+    "hand_inpaint": ("phantom.processors.handinpaint_processor", "HandInpaintProcessor"),
+}
+
+
+class _UnavailableProcessor:
+    """Placeholder for a processor whose module failed to import.
+
+    Only raises when the mode is actually instantiated, so unrelated modes keep
+    working even if this processor's dependencies are missing/broken.
+    """
+
+    def __init__(self, mode: str, error: Exception):
+        self.mode = mode
+        self.error = error
+
+    def __call__(self, *args, **kwargs):
+        raise ImportError(
+            f"Processor '{self.mode}' is unavailable due to an import error: {self.error!r}"
+        )
+
+
 def get_processor_classes(cfg: DictConfig) -> dict:
-    """Initialize the processor classes"""
-    from phantom.processors.bbox_processor import BBoxProcessor
-    from phantom.processors.segmentation_processor import HandSegmentationProcessor, ArmSegmentationProcessor
-    from phantom.processors.hand_processor import Hand2DProcessor, Hand3DProcessor
-    from phantom.processors.action_processor import ActionProcessor
-    from phantom.processors.smoothing_processor import SmoothingProcessor
-    from phantom.processors.robotinpaint_processor import RobotInpaintProcessor
-    from phantom.processors.handinpaint_processor import HandInpaintProcessor
-    
-    return {
-        "bbox": BBoxProcessor,
-        "hand2d": Hand2DProcessor,
-        "hand3d": Hand3DProcessor,
-        "hand_segmentation": HandSegmentationProcessor,
-        "arm_segmentation": ArmSegmentationProcessor,
-        "action": ActionProcessor,
-        "smoothing": SmoothingProcessor,
-        "robot_inpaint": RobotInpaintProcessor,
-        "hand_inpaint": HandInpaintProcessor,
-    }
+    """Lazily import processor classes; tolerate import failures per mode."""
+    import importlib
+
+    classes = {}
+    for mode, (module_path, class_name) in PROCESSOR_REGISTRY.items():
+        try:
+            module = importlib.import_module(module_path)
+            classes[mode] = getattr(module, class_name)
+        except Exception as e:  # noqa: BLE001
+            classes[mode] = _UnavailableProcessor(mode, e)
+    return classes
 
 def validate_mode(cfg: DictConfig) -> None:
     """

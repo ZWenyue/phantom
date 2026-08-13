@@ -65,6 +65,31 @@ class Paths:
             setattr(self, f"hand_data_3d_{side}", self.hand_processor / f"hand_data_3d_{side}.npz")
         self.video_annot = self.data_path / "video_annot.mp4"
 
+        # Intent processor (contact-grounded retargeting, Stage A)
+        self.intent_processor = self.data_path / "intent_processor"
+        self.object_masks = self.intent_processor / "object_masks.npy"
+        self.object_pcd = self.intent_processor / "object_pcd.npz"
+        self.video_object_mask = self.intent_processor / "video_object_mask.mp4"
+        self.object_pcd_preview = self.intent_processor / "object_pcd_preview.png"
+        self.contact_events = self.intent_processor / "contact_events.npz"
+        self.contact_diagnostic = self.intent_processor / "contact_diagnostic.png"
+        self.grasp = self.intent_processor / "grasp.npz"
+        self.grasp_preview = self.intent_processor / "grasp_preview.png"
+        self.intent = self.intent_processor / "intent.npz"
+        self.intent_preview = self.intent_processor / "intent_preview.png"
+
+        # Stage B (whole-trajectory optimization) output.
+        self.stageb_processor = self.data_path / "stageb_processor"
+        self.joint_trajectory = self.stageb_processor / "q_trajectory.npz"
+        self.stageb_diagnostic = self.stageb_processor / "stageb_diagnostic.png"
+
+        # Stage C (retarget render + label + trajectory-level pruning) output.
+        self.retarget_processor = self.data_path / "retarget_processor"
+        self.retarget_video_overlay = self.retarget_processor / "video_overlay.mkv"
+        self.retarget_training_data = self.retarget_processor / "training_data.npz"
+        self.retarget_quality = self.retarget_processor / "quality_report.npz"
+        self.retarget_diagnostic = self.retarget_processor / "retarget_diagnostic.png"
+
         # Action processor
         self.action_processor = self.data_path / "action_processor"
         for side in ["left", "right"]:

@@ -10,6 +10,9 @@ and writes a LeRobot v2.1 dataset directory (meta/, data/, videos/) under --dst.
 
 Run in the `lerobot` conda env (needs ffmpeg, pandas, pyarrow, opencv, numpy):
     conda run -n lerobot python phantom/export_lerobot.py --src data/processed/epic --dst data/processed/epic_lerobot/epic
+
+By default, episodes with any invalid frame (valid=False in the npz) are skipped.
+Use --allow-partial-frames to export only the valid frames from such episodes.
 """
 import argparse
 import csv
@@ -220,6 +223,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--src", type=Path, default=Path("data/processed/epic"))
     parser.add_argument("--dst", type=Path, default=Path("data/processed/epic_lerobot/epic"))
+    parser.add_argument(
+        "--allow-partial-frames",
+        action="store_true",
+        help="keep episodes that contain invalid frames (default: skip them)",
+    )
     args = parser.parse_args()
 
     episodes = discover_episodes(args.src)
@@ -247,6 +255,10 @@ def main():
         n_frames = state.shape[0]
         if n_frames == 0:
             print(f"skip {ep['demo_dir']}: no valid frames")
+            continue
+        if not args.allow_partial_frames and not valid.all():
+            n_invalid = int((~valid).sum())
+            print(f"skip {ep['demo_dir']}: {n_invalid} invalid frame(s)")
             continue
 
         video_out = videos_dir / chunk_dir / CAM_KEY / f"episode_{episode_index:06d}.mp4"

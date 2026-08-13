@@ -1,0 +1,81 @@
+# pick_and_place (Zed RGB-D sample) — Stage A intent processor smoke test
+# Runs object segmentation + object point cloud on the bundled RGB-D demo.
+#
+# Usage (from phantom/):
+#   python phantom/process_data.py --config-path=../b/configs \
+#       --config-name=pickplace_intent mode=intent demo_num=0
+debug: true
+verbose: true
+skip_existing: false
+n_processes: 1
+data_root_dir: "/home/a26160/SRC/phantom/data/raw"
+processed_data_root_dir: "/home/a26160/SRC/phantom/data/processed"
+demo_name: "pick_and_place"
+
+# Processing settings
+mode: ["intent"]
+demo_num: 0
+
+# Additional settings
+debug_cameras: []
+
+# PHANTOM paper (Zed RGB-D) configuration
+input_resolution: 1080
+output_resolution: 240
+robot: "Panda"
+gripper: "Robotiq85"
+square: true
+epic: false
+bimanual_setup: "single_arm"
+target_hand: "left"
+constrained_hand: true
+depth_for_overlay: true
+render: false
+camera_intrinsics: "camera/camera_intrinsics_HD1080.json"
+camera_extrinsics: "camera/camera_extrinsics.json"
+
+# Intent processor (Stage A) settings
+object_prompt: "blue book"
+intent_dino_threshold: 0.25
+intent_seed_stride: 3
+intent_seed_min_score: 0.35
+intent_depth_max: 3.0
+intent_min_object_pts: 50
+
+# Contact detection (Stage A, block 2)
+intent_contact_dist_in: 0.03         # fingertip-object dist to enter contact (m)
+intent_contact_dist_out: 0.05        # fingertip-object dist to exit contact (m)
+intent_contact_min_valid: 5          # min frames w/ fingertip dist to use hand cue
+intent_contact_min_run: 3            # drop contact runs shorter than this (frames)
+intent_contact_motion_thresh: 0.004  # object-motion fallback threshold (m/frame)
+intent_grasp_window: 3               # grasp-phase length at contact onset (frames)
+intent_release_window: 3             # release-phase length at contact offset (frames)
+
+# Grasp synthesis (Stage A, block 3)
+intent_grasp_precontact_window: 8    # frames before grasp_kf to search least-occluded cloud
+intent_grasp_approach_frames: 4      # frames over which to estimate hand approach direction
+intent_gripper_max_width: 0.08       # gripper max opening (m); warn if antipodal width exceeds
+intent_grasp_antipodal_pct: 2.0      # percentile for robust antipodal extremes (reject outliers)
+
+# Intent integration (Stage A, block 4): phase-dependent cost weights (design §2.4)
+intent_wp_free: 1.0                  # position weight in free/transport phases
+intent_wr_free: 0.1                  # orientation weight in free/transport phases
+intent_wp_grasp: 5.0                 # position weight at grasp/release (fidelity budget)
+intent_wr_grasp: 5.0                 # orientation weight at grasp/release
+
+# Stage B (whole-trajectory optimization) settings
+stageb_warm_start: true              # seed q_{1:T} with per-frame frantik/DLS IK
+stageb_grip_rot_offset_deg: 90.0     # Rz offset to align intent grasp frame w/ pipeline gripper (HandModel Rz90)
+stageb_ori_scale: 0.2                # rad/m unit rebalance so orientation doesn't overpower position at keyframes
+stageb_w_smooth: 1.0                 # 2nd-order smoothness weight (replaces GP/SLERP)
+stageb_w_reg: 0.01                   # posture regularizer weight (toward neutral)
+stageb_w_vel: 0.0                    # soft velocity-limit penalty weight (0 disables)
+stageb_dq_max: 0.3                   # per-joint velocity cap (rad/frame) for soft penalty
+stageb_max_nfev: 200                 # max least_squares evaluations
+
+# Stage C (retarget render + label + trajectory-level pruning) settings
+retarget_use_depth: false            # depth-aware occlusion (needs human depth aligned to render res)
+retarget_key_pos_thresh: 0.03        # max grasp/release position error to accept demo (m)
+retarget_vel_thresh: 0.5             # max per-joint |dq| (rad/frame) to accept demo
+retarget_jerk_thresh: 0.05           # max joint-jerk RMS to accept demo
+retarget_frame_pos_thresh: 0.05      # per-frame pos-error threshold for the quality mask

@@ -90,7 +90,10 @@ cd "${ROOT_DIR}"
 echo "=== [6/10] mmcv / mmcv-full (torch 2.1 + cu121) ==="
 # Install lite mmcv first (HaMeR pins 1.3.9), then full ops.
 # Official prebuilt mmcv-full wheels lack sm_90 (H100/H200); build from source.
-pip install "mmcv==1.3.9"
+# --no-build-isolation: mmcv 1.3.9 setup.py imports pkg_resources; the isolated
+# build env would install setuptools>=81 (pkg_resources removed) and fail.
+# Reuse the main env's setuptools<81 (has pkg_resources) + torch instead.
+pip install --no-build-isolation "mmcv==1.3.9"
 export CUDA_HOME="${CONDA_PREFIX}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.0;8.6;9.0}"
 export MMCV_WITH_OPS=1
