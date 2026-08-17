@@ -160,7 +160,7 @@ r(u,v,z) \approx c_0 + c_z(z-\bar z) + c_u u + c_v v,
 
 这些用略减 erode / 很小的表面偏置处理，不要再加大深度补偿。
 
-头戴相机 + 固定 `T_cam2robot` 会让 robot 系 `obj_speed` 抖动；有手时运动回退不会触发。残差补偿不解决这件事。若以后要在无手 demo 上走运动线索，需要按 EgoDex `T_camera` 把点云变到稳定世界系再算速度。
+头戴相机 + 固定 `T_cam2robot` 会让 robot 系 `obj_speed` 抖动；有手时运动回退不会触发。残差补偿不解决这件事。**已接**：`intent_use_T_camera=auto` 用 HDF5 `T_camera` 把点和手变到相对 t0 的稳定 robot 系（见 `stage_a_progress.md`）。
 
 ---
 

@@ -139,6 +139,21 @@ python b/tests/test_traj_opt.py
 - transport 姿态放任到 ~28°（`w_r` 很小，设计如此）；位置全程基本 <1cm，仅 free/transport 两处小尖峰（≤11cm）——这些帧在旧 pipeline 会因 >5cm 阈值被**整帧丢弃**，现在全部保留有解，交由 Stage C 轨迹级质量门判定。
 - **对比早期 bimanual 环境误跑**（grasp 10.6cm/12.7°、release 17.5cm/20.8°）：修正环境一致性后关键帧误差降 **2~3 个数量级**，印证「FK 环境必须与渲染环境同源」。
 
+### 3.3 EgoDex `basic_pick_place` demo 0（头戴 + `T_camera` 冻世界 + `T_place`）
+
+肩部标定把 `G*` 丢到 Panda 底座后方。改成 `T_cam2robot(t)=T_place @ T_c2w(t)`：抓取手中点放到 `intent_place_target=[0.50,0,0.05]`（Mujoco 约 `[-0.06,0,0.96]`，底座前方）。接触相位不变（`grasp_kf=32` / `release_kf=88`）。`intent_grasp_offset=hand`。126/126 有解。
+
+| 指标 | 固定外参 | 冻世界（肩部标定） | **冻世界 + T_place + 手 offset** |
+|---|---|---|---|
+| `p_target` Δ mean/max | 2.1 / 72.5 cm | 1.4 / 21.1 cm | **1.3 / 15.7 cm** |
+| pos_err mean/max | 2.1 / 27.6 cm | 1.36 / 13.0 cm | **0.62 / 8.55 cm** |
+| **grasp** kf t=32 | 5.8 cm / 12.6° | 9.9 cm / 27° | **0.22 cm / 0.2°** |
+| **release** kf t=88 | 2.2 cm / 6.5° | 1.4 cm / 6.6° | **1.36 cm / 0.9°** |
+| cost | 39.9 → 0.57 | 29.7 → 0.95 | **14.0 → 0.10** |
+| 关键帧 max（grasp+release） | >3 cm | 10 cm | **1.36 cm（过 `retarget_key_pos_thresh=3cm`）** |
+
+Grasp 与 Zed RGB-D（0.04 cm / 0.2°）同一量级。剩余尖峰在 free t=89（放完切回手跟随，8.6 cm，低 `w_p`）。Stage C 可以跑。
+
 ---
 
 ## 4. 已知遗留 / 后续
@@ -146,7 +161,7 @@ python b/tests/test_traj_opt.py
 1. ~~**姿态约定需可视校验**~~ — ✅ **已解决**：Stage C 渲染后目视确认夹爪在 grasp 帧精确贴合物体，且 grasp 姿态误差 0.2° 数值印证 `Rz(90)` 约定正确。
 2. ~~**环境一致性**~~ — ✅ **已解决**：Stage B FK 已改用与 Stage C 渲染**同一套单臂 `Phantom` 环境**（base 从 sim 读取），关键帧误差随之降 2~3 个数量级（§3.2）。
 3. **姿态跟物体旋转**：当前 `R_target` 为常量（Stage A v1 假设），见 `stage_a_progress.md` §5.2 门控待办。
-4. **收敛**：本次 `nfev=117 < 200` 即收敛，cost 降到 0.069；如需更紧可增 `stageb_max_nfev` 或调 `xtol`。
+4. **收敛**：Zed RGB-D 上 `nfev=117 < 200` 即收敛。EgoDex demo 0 在 `T_place` 之后 cost 14→0.10，关键帧已是毫米/亚度；仍撞 `max_nfev=200` 是 transport/free 的平滑项，不影响 Stage C 门。
 5. ~~**轨迹级质量剪枝**~~ — ✅ **已在 Stage C 实现**（见 `stage_c_progress.md`）：`TRACKING_ERROR_THRESHOLD` 逐帧丢帧退休，改为按关键帧残差/速度/jerk/限位**保留或丢弃整条 demo**。
 6. **双臂**：当前单臂（`target_hand`）；双臂需扩展决策变量与（可选）双臂耦合项。
 

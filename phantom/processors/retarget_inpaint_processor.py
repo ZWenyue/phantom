@@ -34,6 +34,7 @@ from scipy.spatial.transform import Rotation
 from phantom.processors.phantom_data import TrainingData, TrainingDataSequence
 from phantom.processors.paths import Paths
 from phantom.processors.robotinpaint_processor import RobotInpaintProcessor
+from phantom.twin_robot import TwinRobot
 
 logger = logging.getLogger(__name__)
 
@@ -98,19 +99,20 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
         logger.info("[retarget] demo %s accepted (key_pos=%.1fcm vmax=%.2f jerk=%.3f)",
                     data_sub_folder, quality["key_pos"] * 100, quality["vmax"], quality["jerk"])
 
+        T_c2r_seq = self._load_T_cam2robot_seq(paths, n)
         background = self._load_background(paths, n)
         gripper_actions, gripper_widths = self._compute_gripper_actions(gripper_width.copy())
 
         sequence, img_overlay = self._render_trajectory(
             q_all, ee_pos_robot, ee_R_robot, gripper_width, open_width,
-            gripper_actions, gripper_widths, background,
+            gripper_actions, gripper_widths, background, T_c2r_seq=T_c2r_seq,
         )
         self._save_results_retarget(paths, sequence, img_overlay, background, phase, pos_err)
         logger.info("[retarget] done demo=%s -> %s", data_sub_folder, paths.retarget_video_overlay)
 
     # ------------------------------------------------------------------
     def _render_trajectory(self, q_all, ee_pos_robot, ee_R_robot, gripper_width, open_width,
-                           gripper_actions, gripper_widths, background):
+                           gripper_actions, gripper_widths, background, T_c2r_seq=None):
         from tqdm import tqdm
         sequence = TrainingDataSequence()
         img_overlay: List[np.ndarray] = []
@@ -119,6 +121,8 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
         zeros_j = np.zeros(n_joints)
 
         for idx in tqdm(range(len(q_all)), desc="Retarget render"):
+            if T_c2r_seq is not None:
+                self._set_render_camera_T_c2r(T_c2r_seq[idx])
             results = self._render_joint_positions(q_all[idx], gripper_width[idx], open_width)
             if self.use_depth and "imgs_depth" in results:
                 overlay = self._process_robot_overlay_with_depth(
@@ -199,6 +203,43 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
         if depth is not None:
             results["depth_img"] = depth
         return results
+
+    def _load_T_cam2robot_seq(self, paths: Paths, n: int) -> Optional[np.ndarray]:
+        """Per-frame camera-to-robot from Stage A (T_place @ T_c2w). None → JSON calib."""
+        pcd_path = getattr(paths, "object_pcd", None)
+        if pcd_path is None or not os.path.exists(pcd_path):
+            return None
+        pcd = np.load(pcd_path, allow_pickle=True)
+        if "T_cam2robot_seq" not in pcd.files:
+            return None
+        T = np.asarray(pcd["T_cam2robot_seq"], dtype=np.float64)
+        if T.ndim != 3 or T.shape[-2:] != (4, 4):
+            logger.warning("[retarget] ignore bad T_cam2robot_seq shape %s", T.shape)
+            return None
+        if len(T) < n:
+            pad = np.repeat(T[-1:], n - len(T), axis=0)
+            T = np.concatenate([T, pad], axis=0)
+        elif len(T) > n:
+            T = T[:n]
+        logger.info("[retarget] using per-frame T_cam2robot_seq (%d frames) for overlay camera", n)
+        return T
+
+    def _set_render_camera_T_c2r(self, T_c2r: np.ndarray) -> None:
+        """Move the MuJoCo frontview to camera-to-robot ``T_c2r`` (robot frame)."""
+        T = np.asarray(T_c2r, dtype=np.float64)
+        R = np.array(T[:3, :3], dtype=np.float64, copy=True)
+        ori = self._convert_real_camera_ori_to_mujoco(R)
+        pos_world = T[:3, 3] + TwinRobot.DEFAULT_ROBOT_BASE_POS
+        env = self.twin_robot.env.env
+        sim = env.sim
+        cam = self.twin_robot.camera_name
+        if hasattr(sim.model, "camera_name2id"):
+            cid = sim.model.camera_name2id(cam)
+        else:
+            import mujoco
+            cid = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_CAMERA, cam)
+        sim.model.cam_pos[cid] = pos_world
+        sim.model.cam_quat[cid] = ori
 
     def _set_gripper_qpos(self, sim, width: float, open_width: float) -> None:
         """Set gripper finger qpos to a plausible opening from the intended width."""

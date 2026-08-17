@@ -39,12 +39,41 @@ class DetectorSam2:
     def __init__(self):
         checkpoint = "../submodules/sam2/checkpoints/sam2_hiera_large.pt"
         model_cfg = "sam2_hiera_l.yaml"
-        
+
         if not os.path.exists(checkpoint):
             download_sam2_ckpt(checkpoint)
         self.device = "cuda"
-        
-        self.video_predictor = build_sam2_video_predictor(model_cfg, checkpoint, device=self.device)
+        self.checkpoint = checkpoint
+        self.model_cfg = model_cfg
+        self._video_predictor = None
+        self._image_predictor = None
+
+    @property
+    def video_predictor(self):
+        if self._video_predictor is None:
+            self._video_predictor = build_sam2_video_predictor(
+                self.model_cfg, self.checkpoint, device=self.device
+            )
+        return self._video_predictor
+
+    @property
+    def image_predictor(self):
+        if self._image_predictor is None:
+            model = build_sam2(self.model_cfg, self.checkpoint, device=self.device)
+            self._image_predictor = SAM2ImagePredictor(model)
+        return self._image_predictor
+
+    def segment_box(self, image_rgb: np.ndarray, bbox: np.ndarray) -> np.ndarray:
+        """Single-frame SAM2 mask from an XYXY box. Returns (H, W) uint8 {0,1}."""
+        box = np.asarray(bbox, dtype=np.float32).reshape(4)
+        pred = self.image_predictor
+        with torch.inference_mode(), torch.autocast(self.device, dtype=torch.bfloat16):
+            pred.set_image(image_rgb)
+            masks, scores, _ = pred.predict(box=box, multimask_output=False)
+        mask = np.asarray(masks[0] > 0, dtype=np.uint8)
+        if mask.ndim == 3:
+            mask = mask[0]
+        return mask
     
     def segment_video(self, video_dir: Path, bbox: np.ndarray, points: np.ndarray, 
                       indices: int, reverse: bool=False, output_bboxes: Optional[np.ndarray]=None):

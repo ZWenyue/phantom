@@ -118,6 +118,10 @@ def main() -> None:
         write_hand_npz(out, kpts_cam, kpts_2d, detected)
         print(f"wrote {out}  detected={int(detected.sum())}/{len(detected)}")
 
+    cam_out = demo_dir / "T_camera_c2w.npy"
+    np.save(cam_out, T_c2w)
+    print(f"wrote {cam_out}  T={len(T_c2w)}")
+
 
 if __name__ == "__main__":
     main()

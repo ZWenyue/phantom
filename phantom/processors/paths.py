@@ -67,6 +67,7 @@ class Paths:
 
         # Intent processor (contact-grounded retargeting, Stage A)
         self.intent_processor = self.data_path / "intent_processor"
+        self.T_camera_c2w = self.data_path / "T_camera_c2w.npy"
         self.object_masks = self.intent_processor / "object_masks.npy"
         self.object_pcd = self.intent_processor / "object_pcd.npz"
         self.video_object_mask = self.intent_processor / "video_object_mask.mp4"

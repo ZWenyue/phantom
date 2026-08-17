@@ -40,6 +40,24 @@ intent_dino_threshold: 0.01     # YOLO-World scores are much lower than Groundin
 intent_yolo_model: "/home/a26160/SRC/phantom/yolov8x-worldv2.pt"
 intent_seed_stride: 3
 intent_seed_min_score: 0.01
+intent_seed_prefer_dark: auto   # prompt has black/dark → rank YOLO boxes by dark-pixel fraction
+intent_seed_dark_luma: 60
+intent_seed_score_keep: 0.2     # only re-rank boxes with score >= this * top score
+intent_seed_tighten_dark: true  # shrink the seed box to the dark core before SAM
+intent_track_stride: 1       # YOLO+SAM every frame; hold on miss
+intent_track_iou: 0.15       # IoU(prev mask, box) to keep instance; else re-id by YOLO score
+intent_track_hand_px: 200    # jump to a box whose centre is within this many px of target-hand tips
+intent_track_max_area_ratio: 3.5  # ignore YOLO boxes much larger than the previous mask
+intent_track_jump_px: 120    # no-overlap re-id only if the box is this close to the prev mask centroid
+intent_use_T_camera: auto    # per-frame HDF5 T_camera → stable world, then T_calib@t0
+intent_T_camera_ref: 0
+intent_T_camera_convention: opencv
+intent_place_workspace: auto   # T_place: frozen EgoDex world → Panda workspace (in front of base)
+intent_place_target: [0.50, 0.00, 0.05]  # robot-frame location of the grasp-hand at grasp_kf
+intent_grasp_offset: hand      # contact-segment p_t* offset from hand midpoint (else object G*)
+intent_reuse_masks: true     # reuse object_masks.npy; skip YOLO/SAM when only T_camera changed
+egodex_root: "/home/a26160/DATA/test"
+egodex_task: "basic_pick_place"
 intent_depth_max: 3.0
 intent_min_object_pts: 50
 

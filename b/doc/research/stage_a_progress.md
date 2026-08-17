@@ -38,9 +38,10 @@ Stage A 拆成 4 个子模块（见设计文档 §3）：
 
 1. **物体 prompt 解析** `_get_object_prompt`：优先读每 demo 的 `objects.json`（EgoDex `llm_objects`），否则用配置 `object_prompt`。
 2. **帧加载** `_load_frames` / `_extract_frames_cv2`：纯 cv2 抽帧到 `original_images/`，与 pipeline 一致的 `square` 裁剪（不依赖 ffmpeg）。
-3. **物体检测 + mask 传播**：
-   - `_detect_seed`：Grounding-DINO 扫帧，选**最早的置信帧**（≥ `intent_seed_min_score`）而非全局最高分——早期帧物体孤立，避开操作/遮挡导致的框漂移（曾观察到全局最高分帧把框漂到旁边的木筐）。
-   - `_propagate_mask`：SAM2 以 seed bbox+中心点为条件，前向 + 反向传播全片，得逐帧 mask。
+3. **物体检测 + 跟踪**：
+   - `_detect_seed`：YOLO-World 扫帧，选**最早的置信帧**。prompt 含 black/dark 时按框内暗像素占比重排（躲开灰色锤头），再把框收到暗核再喂 SAM。
+   - `_track_masks`：seed 帧单帧 SAM2；之后每隔 `intent_track_stride` 帧再 YOLO。关联：目标手 UV 附近且面积不过大的框优先（`intent_track_hand_px` / `intent_track_max_area_ratio`）→ 否则取与上一帧 mask 重叠的最大 IoU → 完全无重叠时只重识别**靠近**上一帧质心的框（`intent_track_jump_px`，防止弹回桌面残留），否则 hold。**不再做 SAM2 长程 video propagate**。
+   - EgoDex：`intent_use_T_camera=auto` 冻世界（`T_c2w(t)`），再用常数 `T_place` 把抓取手中点放到 Panda 工作空间 `intent_place_target`（默认底座前方 `[0.50,0,0.05]`）。接触仍在相机系。可复用 `object_masks.npy`（`intent_reuse_masks`）。
 4. **点云反投影** `_build_object_pointclouds`：
    - mask 腐蚀 `intent_mask_erode`（去边缘)；`depth ∈ (0, intent_depth_max)` 有效性过滤。
    - `get_point_cloud_of_segmask` 反投影 → 相机系点云；`remove_statistical_outlier` 去稀疏噪点；`transform_pts(T_cam2robot)` → robot 系点云。
@@ -53,7 +54,7 @@ Stage A 拆成 4 个子模块（见设计文档 §3）：
 | 文件 | 内容 |
 |---|---|
 | `object_masks.npy` | `(T,H,W) uint8` 逐帧物体 mask |
-| `object_pcd.npz` | `points_cam` / `points_robot` / `colors`（object 数组，逐帧变长）、`centroids_robot (T,3)`、`valid (T,)`、`object_prompt`、`seed_idx`、`seed_score`、`intrinsics`、`T_cam2robot` |
+| `object_pcd.npz` | `points_cam` / `points_robot` / `colors`、`centroids_robot`、`valid`、`T_cam2robot`、`T_cam2robot_seq (T,4,4)`、`T_place (4,4)` |
 | `contact_events.npz` | `phase (T,)`、`phase_names (T,)`、`g_closed (T,)`、`contact (T,)`、`d_finger_obj (T,)`（wrap 分数）、`d_eucl`、`d_xy`、`aperture (T,)`、`obj_speed (T,)`、`grasp_keyframe`、`release_keyframe`、`source` |
 | `video_object_mask.mp4` | mask 叠加原图的可视化视频 |
 | `object_pcd_preview.png` | seed 帧点云的 3D 散点预览（robot 系） |
@@ -144,9 +145,9 @@ intent_grasp_antipodal_pct: 2.0     # antipodal 分位（抗离群点，%）
 把前三块的感知结果融成 Stage B 直接消费的**逐帧任务空间意图**（设计 §2.2/§2.3）：
 
 1. **EE 位置目标 `p_target`**：
-   - 抓取段 `[grasp_kf, release_kf]` 用**物体相对**表达——抓取起始锁定偏移 `offset = G_center − centroid[grasp_frame]`，逐帧 `p_t* = centroid_t + offset`，使 EE 跟着物体走（即便手被遮挡也不丢目标，对齐设计"接触段物体相对系"）。
-   - 段外优先跟随人手（thumb-index 中点，`_ee_target_from_hand` 选开口更小=正在捏的手）；无手时 hold 抓取位姿；再退化到物体质心。
-   - `_fill_targets` 用时序最近有效值补空，保证轨迹**无空洞**（不凭空造运动：前导 hold 首个有效、其余 hold 上一个）。
+   - 抓取段 `[grasp_kf, release_kf]` **物体相对**：`p_t* = centroid_t + offset`。`intent_grasp_offset=hand`（EgoDex 默认）锁定 `offset = 手中点(grasp_kf) − centroid`，onset 与段外手跟随连续；`object` 则用 `G_center − centroid`。姿态/开口仍用点云 `G*`。
+   - 段外跟随 **`target_hand`** 的 thumb-index 中点（与接触同一过滤）。
+   - `_fill_targets` 用时序最近有效值补空，保证轨迹**无空洞**。
 2. **EE 朝向目标 `R_target`**：全程锁定物体锚定的 `G_rot`（刚体平行夹爪抓取、物体按平移跟踪的 **v1 假设**，见 §5.2）。
 3. **夹爪指令**：`g_closed` 来自接触 FSM，`gripper_width` = 闭合时 `G_width` / 张开时 `gripper_max_width`。
 4. **相位相关代价权重 `w_p` / `w_r`**（设计 §2.4）：保真度预算集中在 grasp/release（高权重），free/transport 低权重——Stage B 直接读取即可。
@@ -246,7 +247,7 @@ python b/export_egodex_objects.py --task basic_pick_place   # 写每 demo object
 
 ### 5.3 已知遗留 / 依赖决策
 - **接触检测的真实手端到端验证**：pick_and_place（有深度）暂未跑 HaMeR（当前环境 `mmpose`/`mmcv` import `EOFError`、`_DATA` 手权重目录为空），故 RGB-D 上接触暂走物体运动回退分支；指尖分支已用合成手单测验证。修复手管线（或补 EgoDex 深度）后即可端到端跑指尖分支。
-- **EgoDex 深度**：HDF5 仍无场景深度。DA3 Nested Giant + 手 GT affine lock 已写出 `depth.npy`；残差补偿已落地（见 `egodex_depth_residual.md`）。Demo 0 上 lock 后有符号 \(z\) 残差 ~0，指–物最近 4.8 cm 是横向缝（t=79 拇指 Δx=−4.7 cm、Δz=+0.3 cm），不是深度偏置。接触仍未切入；下一步是接触线索 / 遮挡，不是继续拧深度。
+- **EgoDex 深度 / 头动 / 工作空间**：DA3 lock 后指–物缝是横向 wrap，不是 \(z\)。逐帧 `T_camera` 冻世界后再 `T_place` 把 grasp 手中点放到 Panda 前方（demo 0：世界 `[0.12,0.91,-0.72]` → robot `[0.50,0,0.05]`，Mujoco `[-0.06,0,0.96]`）。`intent_grasp_offset=hand` 后 onset 连续。见 `stage_b_progress.md` §3.3。
 - **点云残留噪点**：seed 帧仍有少量书页/筐边稀疏点；如需更干净可加最大连通簇/DBSCAN 提取（当前统计离群点去除已够用）。
 - **多 demo / 多物体**：当前单目标物体；多物体、跨帧关联、穿遮挡跟踪（Cutie/SAM2 video）待扩展（Risk #3）。
 

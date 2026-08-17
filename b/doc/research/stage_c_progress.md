@@ -128,6 +128,10 @@ python process_data.py --config-path=../b/configs \
 ### 3.4 质量门
 `accept=True`，`reasons=[]`：`key_pos=1.07cm`(<3)、`vmax=0.067`(<0.5)、`jerk=0.0036`(<0.05)、`viol=0`，`frame_ok=182/184`（2 个 free 帧略超 5cm，不影响接受）。
 
+### 3.5 EgoDex `basic_pick_place` demo 0（头戴 + `T_place`）
+
+`egodex_panda_intent.yaml`、`mode=retarget_inpaint`。质量门 `accept=True`（`key_pos=1.36cm`、`vmax=0.11`、`jerk=0.005`、`viol=0`）；`frame_ok=124/126`（t=89/90 是放完切回手跟随的 free 尖峰）。标签 `joint_pos_right==q`、`action_pos_right==FK(q)`。背景用已有 `video_human_inpaint`（去手）。渲染相机按 Stage A 的逐帧 `T_cam2robot_seq`（`T_place @ T_c2w`），不是肩部 JSON。诊断图 grasp 帧夹爪贴订书钉、transport 提起、release 放进盒盖。产出：`retarget_processor/video_overlay.mkv`。
+
 ---
 
 ## 4. 已知遗留 / 后续
