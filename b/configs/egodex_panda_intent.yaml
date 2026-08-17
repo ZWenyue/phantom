@@ -1,0 +1,78 @@
+# EgoDex basic_pick_place — contact-grounded intent smoke (demo 0)
+#
+# Prerequisites:
+#   1) DA3 depth.npy in the processed demo dir
+#   2) python b/export_egodex_objects.py --task basic_pick_place
+#   3) python b/export_egodex_hand_gt.py --task basic_pick_place --demo 0 --overwrite
+#
+# Usage (from phantom/phantom):
+#   python process_data.py --config-path=../b/configs \
+#       --config-name=egodex_panda_intent mode=intent demo_num=0
+debug: true
+verbose: true
+skip_existing: false
+n_processes: 1
+data_root_dir: "/home/a26160/DATA/test_phantom"
+processed_data_root_dir: "/home/a26160/DATA/test_phantom_processed"
+demo_name: "egodex_basic_pick_place"
+
+mode: ["intent"]
+demo_num: 0
+
+debug_cameras: []
+
+input_resolution: 1080
+output_resolution: 1080
+robot: "Panda"
+gripper: "Robotiq85"
+square: false
+epic: true
+bimanual_setup: "single_arm"
+target_hand: "right"
+constrained_hand: false
+depth_for_overlay: false
+render: false
+camera_intrinsics: "camera/camera_intrinsics_egodex.json"
+camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
+
+object_prompt: "black stapler"
+intent_dino_threshold: 0.01     # YOLO-World scores are much lower than Grounding-DINO
+intent_yolo_model: "/home/a26160/SRC/phantom/yolov8x-worldv2.pt"
+intent_seed_stride: 3
+intent_seed_min_score: 0.01
+intent_depth_max: 3.0
+intent_min_object_pts: 50
+
+intent_contact_dist_in: 0.03
+intent_contact_dist_out: 0.05
+intent_contact_xy_inflate: 0.06  # wrap: |Δz| if nearest visible point is within 6 cm XY
+intent_contact_min_valid: 5
+intent_contact_min_run: 3
+intent_contact_motion_thresh: 0.004
+intent_grasp_window: 3
+intent_release_window: 3
+
+intent_grasp_precontact_window: 8
+intent_grasp_approach_frames: 4
+intent_gripper_max_width: 0.08
+intent_grasp_antipodal_pct: 2.0
+
+intent_wp_free: 1.0
+intent_wr_free: 0.1
+intent_wp_grasp: 5.0
+intent_wr_grasp: 5.0
+
+stageb_warm_start: true
+stageb_grip_rot_offset_deg: 90.0
+stageb_ori_scale: 0.2
+stageb_w_smooth: 1.0
+stageb_w_reg: 0.01
+stageb_w_vel: 0.0
+stageb_dq_max: 0.3
+stageb_max_nfev: 200
+
+retarget_use_depth: false
+retarget_key_pos_thresh: 0.03
+retarget_vel_thresh: 0.5
+retarget_jerk_thresh: 0.05
+retarget_frame_pos_thresh: 0.05

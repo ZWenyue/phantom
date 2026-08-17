@@ -1,6 +1,7 @@
 # Stage A 进展与待办 — Contact-Grounded Retargeting
 
 > 配套设计文档：`contact_grounded_retargeting.md`（§3 Stage A）
+> EgoDex 深度 + 残差补偿方案：`egodex_depth_residual.md`
 > 本文件记录 Stage A（感知 + 意图抽取）的实现进度、验证结果与后续待办。
 > Status: Stage A 全部 4 个子模块（物体点云 / 接触检测 / 抓取合成 / 意图整合）已实现并验证。
 
@@ -53,7 +54,7 @@ Stage A 拆成 4 个子模块（见设计文档 §3）：
 |---|---|
 | `object_masks.npy` | `(T,H,W) uint8` 逐帧物体 mask |
 | `object_pcd.npz` | `points_cam` / `points_robot` / `colors`（object 数组，逐帧变长）、`centroids_robot (T,3)`、`valid (T,)`、`object_prompt`、`seed_idx`、`seed_score`、`intrinsics`、`T_cam2robot` |
-| `contact_events.npz` | `phase (T,)`、`phase_names (T,)`、`g_closed (T,)`、`contact (T,)`、`d_finger_obj (T,)`、`aperture (T,)`、`obj_speed (T,)`、`grasp_keyframe`、`release_keyframe`、`source` |
+| `contact_events.npz` | `phase (T,)`、`phase_names (T,)`、`g_closed (T,)`、`contact (T,)`、`d_finger_obj (T,)`（wrap 分数）、`d_eucl`、`d_xy`、`aperture (T,)`、`obj_speed (T,)`、`grasp_keyframe`、`release_keyframe`、`source` |
 | `video_object_mask.mp4` | mask 叠加原图的可视化视频 |
 | `object_pcd_preview.png` | seed 帧点云的 3D 散点预览（robot 系） |
 | `contact_diagnostic.png` | 接触信号诊断图（指-物距离/开口/物速 + 相位阴影 + 抓/放关键帧竖线） |
@@ -76,6 +77,7 @@ intent_contact_dist_in: 0.03        # 指-物距离进入接触阈（米）
 intent_contact_dist_out: 0.05       # 指-物距离退出接触阈（迟滞，米）
 intent_contact_min_valid: 5         # 有效指-物距离帧数下限（低于则回退物体运动线索）
 intent_contact_min_run: 3           # 丢弃短于此的接触段（帧）
+intent_contact_xy_inflate: 0.06     # 可见点云 XY 膨胀（米）；包握时用 hypot(dxy_extra, |Δz|)
 intent_contact_motion_thresh: 0.004 # 物体运动回退阈（米/帧）
 intent_grasp_window: 3              # 接触起始的 grasp 相位长度（帧）
 intent_release_window: 3           # 接触结束的 release 相位长度（帧）
@@ -85,10 +87,11 @@ intent_release_window: 3           # 接触结束的 release 相位长度（帧�
 
 1. **手指尖轨迹** `_load_hand_fingertips`：读 `hand_processor/hand_data_{left,right}.npz` 的 `kpts_3d`（相机系），经 `_to_robot_frame(T_cam2robot)` → robot 系；取 thumb/index/middle 指尖（idx 4/8/12），并算抓握开口 `aperture = ‖thumb_tip − index_tip‖`。
 2. **逐帧信号**：
-   - `d_finger_obj[t]`：各指尖到该帧物体点云的**最近表面距离**取最小（主线索，符合设计）。
-   - `obj_speed[t]`：物体质心逐帧位移（米/帧，辅助/回退线索——物体只在被抓时移动）。
+   - `d_finger_obj[t]`：wrap-aware 接触分数。对最近可见点在 **相机系 XY 上膨胀** `intent_contact_xy_inflate`（默认 6 cm）后再取 `hypot(dxy_extra, |Δz|)`。真正贴面时与欧氏距离相同；包握时可见顶面侧向差 5 cm、Δz≈3 mm 仍能进 3 cm 带（EgoDex stapler）。`d_eucl` / `d_xy` 一并存盘作诊断。
+   - 双手时优先 `target_hand`（避免闲置撑桌手抢接触）。
+   - `obj_speed[t]`：物体质心逐帧位移（米/帧，无手时回退）。
 3. **接触判定**：
-   - 有手时用**指-物距离双阈迟滞** `_hysteresis_contact`（进 `dist_in`、出 `dist_out`），`source=fingertip`。
+   - 有手时用**指-物分数双阈迟滞** `_hysteresis_contact`（进 `dist_in`、出 `dist_out`），`source=fingertip_wrap`（`xy_inflate>0`）或 `fingertip`。
    - 无手时（如当前 pick_and_place 尚未跑 HaMeR）自动**回退物体运动** `_motion_contact`（阈 `motion_thresh`，桥接运输中的瞬时静止），`source=object_motion`。
    - `_filter_min_run` 去除过短接触段。
 4. **相位切分** `_segment_phases`：取最长接触段为操作段，输出 `phase ∈ {free, grasp, transport, release}`、夹爪状态 `g_closed`、`grasp_keyframe` / `release_keyframe`。
@@ -243,7 +246,7 @@ python b/export_egodex_objects.py --task basic_pick_place   # 写每 demo object
 
 ### 5.3 已知遗留 / 依赖决策
 - **接触检测的真实手端到端验证**：pick_and_place（有深度）暂未跑 HaMeR（当前环境 `mmpose`/`mmcv` import `EOFError`、`_DATA` 手权重目录为空），故 RGB-D 上接触暂走物体运动回退分支；指尖分支已用合成手单测验证。修复手管线（或补 EgoDex 深度）后即可端到端跑指尖分支。
-- **EgoDex 无深度**：EgoDex HDF5 只有相机内参 + 3D 手关节，**无场景深度**，故点云链路目前在 Phantom Zed RGB-D 上跑通。切回 EgoDex 需先定深度方案（视频级时序一致 + 度量深度模型，见设计文档 Risk #4 / M4）。`objects.json` 导出脚本已就绪。
+- **EgoDex 深度**：HDF5 仍无场景深度。DA3 Nested Giant + 手 GT affine lock 已写出 `depth.npy`；残差补偿已落地（见 `egodex_depth_residual.md`）。Demo 0 上 lock 后有符号 \(z\) 残差 ~0，指–物最近 4.8 cm 是横向缝（t=79 拇指 Δx=−4.7 cm、Δz=+0.3 cm），不是深度偏置。接触仍未切入；下一步是接触线索 / 遮挡，不是继续拧深度。
 - **点云残留噪点**：seed 帧仍有少量书页/筐边稀疏点；如需更干净可加最大连通簇/DBSCAN 提取（当前统计离群点去除已够用）。
 - **多 demo / 多物体**：当前单目标物体；多物体、跨帧关联、穿遮挡跟踪（Cutie/SAM2 video）待扩展（Risk #3）。
 

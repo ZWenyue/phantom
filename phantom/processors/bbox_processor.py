@@ -6,7 +6,7 @@ in demonstration videos. It serves as the first stage in the hand processing pip
 spatial localization data for downstream pose estimation and segmentation tasks.
 
 Key Features:
-- Multiple hand detection methods (DINO, EPIC-KITCHENS integration)
+- Multiple hand detection methods (YOLO-World, EPIC-KITCHENS integration)
 - Bimanual hand tracking with left/right classification
 - Temporal consistency through outlier filtering and interpolation
 - Spatial constraint validation (edge detection, center positioning)
@@ -22,7 +22,7 @@ Processing Pipeline:
 7. Result visualization and storage
 
 The processor supports multiple detection backends:
-- DINO-based detection for general hand detection
+- YOLO-World open-vocabulary detection for general hand detection
 - EPIC-KITCHENS pre-computed detections
 - Configurable confidence thresholds and spatial constraints
 
@@ -70,7 +70,7 @@ class BBoxProcessor(BaseProcessor):
     MAX_INTERPOLATION_GAP = 10  # Maximum frames to interpolate over
     MAX_SPATIAL_JUMP = 200.0  # Maximum allowed pixel jump between detections
     MAX_JUMP_LOOKAHEAD = 10  # Maximum consecutive distant points to filter
-    DINO_CONFIDENCE_THRESH = 0.2  # Default confidence threshold
+    DINO_CONFIDENCE_THRESH = 0.05  # YOLO-World open-vocab scores are lower than DINO
     
     # Visualization constants
     LEFT_HAND_COLOR = (0, 0, 255)  # BGR format - Red for left hand
@@ -97,7 +97,7 @@ class BBoxProcessor(BaseProcessor):
         center (int): Horizontal center of the frame for left/right classification
         margin (int): Pixel margin for hand side classification tolerance
         confidence_threshold (float): Minimum confidence for valid detections
-        dino_detector: DINO-based hand detector (if not using EPIC data)
+        dino_detector: YOLO-World hand detector (if not using EPIC data)
         filtered_hand_detection_data (dict): Processed EPIC detection data
         sorted_keys (list): Sorted frame indices for EPIC data processing
     """
@@ -116,10 +116,10 @@ class BBoxProcessor(BaseProcessor):
 
         # Initialize detection backend based on dataset type
         if not self.epic:
-            from phantom.detectors.detector_dino import DetectorDino
-            self.dino_detector: DetectorDino = DetectorDino("IDEA-Research/grounding-dino-base")
+            from phantom.detectors.detector_yolo_world import DetectorYoloWorld
+            self.dino_detector: DetectorYoloWorld = DetectorYoloWorld()
         else:
-            self.dino_detector: Optional[DetectorDino] = None
+            self.dino_detector = None
             
         # EPIC-specific attributes
         self.filtered_hand_detection_data: Dict[str, List[Any]] = {}
@@ -200,14 +200,14 @@ class BBoxProcessor(BaseProcessor):
         return imgs_rgb
 
     # ============================================================================
-    # PHANTOM-SPECIFIC METHODS (DINO Detection)
+    # PHANTOM-SPECIFIC METHODS (YOLO-World Detection)
     # ============================================================================
     def _process_frames(self, imgs_rgb: np.ndarray) -> Dict[str, np.ndarray]:
         """
-        Process RGB frames using DINO detector for hand detection and classification.
+        Process RGB frames using YOLO-World for hand detection and classification.
         
         This method handles the core detection pipeline for non-EPIC datasets,
-        using DINO for hand detection and implementing spatial reasoning for
+        using open-vocab detection for hands and implementing spatial reasoning for
         left/right classification.
         
         Args:
@@ -225,8 +225,7 @@ class BBoxProcessor(BaseProcessor):
 
         for idx in range(num_frames):
             try:
-                # Run DINO detection on current frame
-                bboxes, scores = self.dino_detector.get_bboxes(imgs_rgb[idx], "a hand", threshold=self.DINO_CONFIDENCE_THRESH, visualize=False)
+                bboxes, scores = self.dino_detector.get_bboxes(imgs_rgb[idx], "hand", threshold=self.DINO_CONFIDENCE_THRESH, visualize=False)
                 if len(bboxes) == 0:
                     continue
 

@@ -14,10 +14,14 @@ logger = logging.getLogger(__name__)
 
 class DetectorDino:
     def __init__(self, detector_id: str):
-        self.detector = pipeline(
-            model=detector_id,
+        self.detector_id = detector_id
+        self.detector = self._build("cuda")
+
+    def _build(self, device: str):
+        return pipeline(
+            model=self.detector_id,
             task="zero-shot-object-detection",
-            device="cuda",
+            device=device,
             batch_size=4,
         )
 
@@ -39,7 +43,16 @@ class DetectorDino:
         """
         img_pil = Image.fromarray(frame)
         labels = [f"{object_name}."]
-        results = self.detector(img_pil, candidate_labels=labels, threshold=threshold)
+        try:
+            results = self.detector(img_pil, candidate_labels=labels, threshold=threshold)
+        except RuntimeError as exc:
+            msg = str(exc).lower()
+            if "kernel image is invalid" in msg or "cuda" in msg:
+                logger.warning("Grounding-DINO CUDA failed (%s); falling back to CPU", exc)
+                self.detector = self._build("cpu")
+                results = self.detector(img_pil, candidate_labels=labels, threshold=threshold)
+            else:
+                raise
         results = [DetectionResult.from_dict(result) for result in results]
         if not results:
             return np.array([]), np.array([])

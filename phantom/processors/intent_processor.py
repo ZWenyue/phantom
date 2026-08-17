@@ -10,12 +10,14 @@ consumes.
 Implemented scope:
 
     1. Determine the task object prompt (per-demo ``objects.json`` or config).
-    2. Detect the object with Grounding-DINO and propagate the mask through the
-       whole clip with SAM2 (forward + reverse from the best-confidence frame).
+    2. Detect the object with YOLO-World (open-vocab text prompt) and propagate
+       the mask through the whole clip with SAM2 (forward + reverse from the
+       earliest confident frame).
     3. Back-project the per-frame object mask with the metric depth map to build a
        per-frame object point cloud (camera frame + robot frame).
     4. Detect contact / segment free->grasp->transport->release phases
-       (``_detect_contacts``): fingertip-object distance cue, with an
+       (``_detect_contacts``): fingertip-object distance cue, with a wrap-aware
+       lateral inflation so occluded contact faces still register, plus an
        object-motion fallback when no hand keypoints are available.
     5. Synthesize an object-anchored antipodal grasp ``G*`` (``_synthesize_grasp``):
        closing axis from the human thumb-index axis (or object PCA), approach from
@@ -66,18 +68,22 @@ class IntentProcessor(BaseProcessor):
     """Stage A: perception + intent extraction (object seg + point cloud).
 
     Config keys (all optional, sensible defaults applied):
-        object_prompt (str):      fallback object noun for DINO if no objects.json.
-        intent_dino_threshold (float): DINO confidence threshold (default 0.25).
-        intent_seed_stride (int): stride for the DINO seed search (default 3).
+        object_prompt (str):      fallback object noun for YOLO-World if no objects.json.
+        intent_dino_threshold (float): detector confidence threshold (default 0.01 for YOLO-World).
+        intent_yolo_model (str):  ultralytics YOLO-World weight (default yolov8x-worldv2.pt).
+        intent_seed_stride (int): stride for the seed search (default 3).
+        intent_seed_min_score (float): earliest-confident seed floor (default 0.01).
         intent_depth_max (float): max valid depth in meters (default 3.0).
         intent_min_object_pts (int): min points to consider a frame's cloud valid.
     """
 
     def __init__(self, args):
         super().__init__(args)
-        self.dino_threshold = float(getattr(self.cfg, "intent_dino_threshold", 0.25))
+        # YOLO-World open-vocab scores are typically ~0.01-0.05, not DINO's ~0.3+.
+        self.dino_threshold = float(getattr(self.cfg, "intent_dino_threshold", 0.01))
+        self.yolo_model = str(getattr(self.cfg, "intent_yolo_model", "yolov8x-worldv2.pt"))
         self.seed_stride = int(getattr(self.cfg, "intent_seed_stride", 3))
-        self.seed_min_score = float(getattr(self.cfg, "intent_seed_min_score", 0.35))
+        self.seed_min_score = float(getattr(self.cfg, "intent_seed_min_score", 0.01))
         self.depth_max = float(getattr(self.cfg, "intent_depth_max", 3.0))
         self.min_object_pts = int(getattr(self.cfg, "intent_min_object_pts", 50))
         self.mask_erode = int(getattr(self.cfg, "intent_mask_erode", 2))
@@ -87,6 +93,10 @@ class IntentProcessor(BaseProcessor):
         # Contact detection params.
         self.contact_dist_in = float(getattr(self.cfg, "intent_contact_dist_in", 0.03))
         self.contact_dist_out = float(getattr(self.cfg, "intent_contact_dist_out", 0.05))
+        # Lateral (camera-XY) inflation for wrap grasps: if the nearest visible
+        # surface is within this radius and |Δz| is small, treat |Δz| as the
+        # contact score. 0 disables wrap and keeps pure Euclidean.
+        self.contact_xy_inflate = float(getattr(self.cfg, "intent_contact_xy_inflate", 0.06))
         self.contact_min_valid = int(getattr(self.cfg, "intent_contact_min_valid", 5))
         self.contact_min_run = int(getattr(self.cfg, "intent_contact_min_run", 3))
         self.contact_motion_thresh = float(getattr(self.cfg, "intent_contact_motion_thresh", 0.004))
@@ -107,18 +117,21 @@ class IntentProcessor(BaseProcessor):
         self.wr_grasp = float(getattr(self.cfg, "intent_wr_grasp", 5.0))
 
         # Lazily built to avoid loading heavy models when not needed.
-        self._dino = None
+        self._detector = None
         self._sam2 = None
 
     # ------------------------------------------------------------------
     # Detector lazy init
     # ------------------------------------------------------------------
     @property
-    def dino(self):
-        if self._dino is None:
-            from phantom.detectors.detector_dino import DetectorDino
-            self._dino = DetectorDino("IDEA-Research/grounding-dino-base")
-        return self._dino
+    def detector(self):
+        if self._detector is None:
+            from phantom.detectors.detector_yolo_world import DetectorYoloWorld
+            self._detector = DetectorYoloWorld(self.yolo_model)
+        return self._detector
+
+    # Backward-compatible alias used by older call sites / notebooks.
+    dino = detector
 
     @property
     def sam2(self):
@@ -186,7 +199,7 @@ class IntentProcessor(BaseProcessor):
     # Object prompt resolution
     # ------------------------------------------------------------------
     def _get_object_prompt(self, paths: Paths) -> str:
-        """Resolve the object noun to feed Grounding-DINO.
+        """Resolve the object noun to feed YOLO-World.
 
         Priority: per-demo ``objects.json`` (written from EgoDex llm_objects) >
         config ``object_prompt``.
@@ -296,7 +309,7 @@ class IntentProcessor(BaseProcessor):
         early_bbox: Optional[np.ndarray] = None
         early_score = -1.0
         for idx in range(0, len(frames), max(1, self.seed_stride)):
-            bboxes, scores = self.dino.get_bboxes(
+            bboxes, scores = self.detector.get_bboxes(
                 frames[idx], object_prompt, threshold=self.dino_threshold
             )
             if len(bboxes) == 0:
@@ -457,6 +470,8 @@ class IntentProcessor(BaseProcessor):
                 g_closed=contact_result["g_closed"],
                 contact=contact_result["contact"],
                 d_finger_obj=contact_result["d_finger_obj"],
+                d_eucl=contact_result.get("d_eucl", contact_result["d_finger_obj"]),
+                d_xy=contact_result.get("d_xy", np.full_like(contact_result["d_finger_obj"], np.nan)),
                 aperture=contact_result["aperture"],
                 obj_speed=contact_result["obj_speed"],
                 grasp_keyframe=contact_result["grasp_keyframe"],
@@ -537,10 +552,16 @@ class IntentProcessor(BaseProcessor):
 
             ax0 = axes[0]
             d = contact_result["d_finger_obj"]
+            d_eu = contact_result.get("d_eucl")
             if np.isfinite(d).any():
-                ax0.plot(x, d, color="k", lw=1.2, label="fingertip-object dist (m)")
+                ax0.plot(x, d, color="k", lw=1.2, label="contact score (m)")
                 ax0.axhline(self.contact_dist_in, color="g", ls="--", lw=0.8, label="dist_in")
                 ax0.axhline(self.contact_dist_out, color="r", ls="--", lw=0.8, label="dist_out")
+            if d_eu is not None and np.isfinite(d_eu).any():
+                ax0.plot(x, d_eu, color="0.45", lw=0.8, ls=":", label="euclidean (m)")
+            dxy = contact_result.get("d_xy")
+            if dxy is not None and np.isfinite(dxy).any():
+                ax0.plot(x, dxy, color="C1", lw=0.8, alpha=0.7, label="d_xy (m)")
             ap = contact_result["aperture"]
             if np.isfinite(ap).any():
                 ax0.plot(x, ap, color="purple", lw=1.0, alpha=0.7, label="grasp aperture (m)")
@@ -671,44 +692,91 @@ class IntentProcessor(BaseProcessor):
     # ------------------------------------------------------------------
     # Contact detection + phase segmentation
     # ------------------------------------------------------------------
+    def _hands_for_contact(self, hands: Dict[str, dict]) -> Dict[str, dict]:
+        """Prefer ``target_hand`` so an idle table-hand cannot steal contact."""
+        th = str(getattr(self, "target_hand", "") or "").lower()
+        if th in ("left", "right") and th in hands:
+            return {th: hands[th]}
+        return hands
+
+    @staticmethod
+    def _wrap_aware_score(
+        fp: np.ndarray, obj_pts: np.ndarray, xy_inflate: float,
+    ) -> Tuple[float, float, float]:
+        """Contact score for one fingertip vs a cloud in the *same* frame.
+
+        Inflates the visible cloud by ``xy_inflate`` in XY (cm-scale wrap
+        around an occluded contact face) then takes the remaining
+        ``hypot(dxy_extra, Δz)``. ``xy_inflate <= 0`` is pure Euclidean.
+        A hard |Δz|-if-inside-radius switch is avoided: it cliffs back to
+        Euclidean as soon as dxy exceeds the radius and chops the transport
+        segment of a wrap grasp.
+        """
+        delta = obj_pts - fp.reshape(1, 3)
+        dist = np.linalg.norm(delta, axis=1)
+        j = int(np.argmin(dist))
+        d_eucl = float(dist[j])
+        dxy = float(np.hypot(delta[j, 0], delta[j, 1]))
+        dz = float(abs(delta[j, 2]))
+        extra = max(dxy - max(xy_inflate, 0.0), 0.0)
+        score = float(np.hypot(extra, dz))
+        return score, d_eucl, dxy
+
     def _detect_contacts(
         self, pcd_result: Dict[str, list], hands: Dict[str, dict]
     ) -> Dict[str, np.ndarray]:
         """Detect grasp/release and segment free/grasp/transport/release phases.
 
-        Primary cue (per design): min distance from the fingertips (thumb/index/
-        middle tips) to the object point-cloud surface. When hand keypoints are
-        unavailable, falls back to an object-motion cue (the object only moves
-        while grasped), so the phase FSM still produces a usable segmentation.
+        Primary cue: wrap-aware fingertip-object distance. Visible top-face
+        clouds miss the contact patch of a wrap grasp (EgoDex stapler: 4.7 cm
+        in camera X, 0.3 cm in Z). When the nearest point is within
+        ``intent_contact_xy_inflate`` in XY, the score is |Δz| (camera frame
+        if clouds/fingertips are available, else robot frame). Pure Euclidean
+        is kept for diagnostics and used when wrap is off.
+
+        No hand keypoints → object-motion fallback.
         """
         n = len(pcd_result["valid"])
         points_robot = pcd_result["points_robot"]
+        points_cam = pcd_result.get("points_cam")
         centroids = pcd_result["centroids_robot"]
         obj_valid = np.asarray(pcd_result["valid"], dtype=bool)
+        xy_inf = float(getattr(self, "contact_xy_inflate", 0.0) or 0.0)
+        use_hands = self._hands_for_contact(hands)
 
-        # Per-frame signals.
         d_finger_obj = np.full(n, np.nan, dtype=np.float32)
+        d_eucl = np.full(n, np.nan, dtype=np.float32)
+        d_xy = np.full(n, np.nan, dtype=np.float32)
         aperture = np.full(n, np.nan, dtype=np.float32)
         for t in range(n):
             if not obj_valid[t] or len(points_robot[t]) == 0:
                 continue
-            obj_pts = points_robot[t]
-            best_d, best_ap = np.inf, np.nan
-            for h in hands.values():
+            obj_rf = points_robot[t]
+            obj_cam = None
+            if points_cam is not None and t < len(points_cam) and len(points_cam[t]) > 0:
+                obj_cam = points_cam[t]
+            best = (np.inf, np.inf, np.inf, np.nan)  # score, eucl, dxy, aperture
+            for h in use_hands.values():
                 if not h["detected"][t]:
                     continue
-                fps = h["fingertips"][t]  # (len(FINGERTIP_IDXS), 3)
-                dmin = min(
-                    float(np.linalg.norm(obj_pts - fp, axis=1).min()) for fp in fps
-                )
-                if dmin < best_d:
-                    best_d = dmin
-                    best_ap = float(h["aperture"][t])
-            if np.isfinite(best_d):
-                d_finger_obj[t] = best_d
-                aperture[t] = best_ap
+                fps_rf = h["fingertips"][t]
+                fps_cam = h.get("fingertips_cam")
+                use_cam = obj_cam is not None and fps_cam is not None
+                fps = fps_cam[t] if use_cam else fps_rf
+                obj = obj_cam if use_cam else obj_rf
+                scores = [
+                    self._wrap_aware_score(fp, obj, xy_inf) for fp in fps
+                ]
+                si = int(np.argmin([s[0] for s in scores]))
+                score, eucl, lat = scores[si]
+                if score < best[0]:
+                    best = (score, eucl, lat, float(h["aperture"][t]))
+            if np.isfinite(best[0]):
+                d_finger_obj[t] = best[0]
+                d_eucl[t] = best[1]
+                d_xy[t] = best[2]
+                aperture[t] = best[3]
 
-        # Object centroid speed (m/frame).
         obj_speed = np.full(n, np.nan, dtype=np.float32)
         for t in range(1, n):
             if obj_valid[t] and obj_valid[t - 1]:
@@ -720,6 +788,8 @@ class IntentProcessor(BaseProcessor):
                 d_finger_obj, self.contact_dist_in, self.contact_dist_out
             )
             source = "fingertip"
+            if xy_inf > 0.0:
+                source = "fingertip_wrap"
         else:
             contact = self._motion_contact(obj_speed, self.contact_motion_thresh)
             source = "object_motion"
@@ -731,9 +801,16 @@ class IntentProcessor(BaseProcessor):
 
         phase, g_state, grasp_kf, release_kf = self._segment_phases(contact)
 
+        n_wrap = int(np.nansum(
+            np.isfinite(d_finger_obj) & np.isfinite(d_eucl) & (d_finger_obj < d_eucl - 1e-4)
+        ))
         logger.info(
-            "[intent] contact source=%s grasp_kf=%s release_kf=%s contact_frames=%d/%d",
+            "[intent] contact source=%s grasp_kf=%s release_kf=%s contact_frames=%d/%d"
+            "  d_wrap min=%.3f d_eucl min=%.3f xy_inflate=%.3f wrap_frames=%d",
             source, grasp_kf, release_kf, int(contact.sum()), n,
+            float(np.nanmin(d_finger_obj)) if np.isfinite(d_finger_obj).any() else np.nan,
+            float(np.nanmin(d_eucl)) if np.isfinite(d_eucl).any() else np.nan,
+            xy_inf, n_wrap,
         )
         return {
             "phase": phase,
@@ -741,6 +818,8 @@ class IntentProcessor(BaseProcessor):
             "g_closed": g_state,
             "contact": contact,
             "d_finger_obj": d_finger_obj,
+            "d_eucl": d_eucl,
+            "d_xy": d_xy,
             "aperture": aperture,
             "obj_speed": obj_speed,
             "grasp_keyframe": np.int64(grasp_kf if grasp_kf is not None else -1),
@@ -769,7 +848,14 @@ class IntentProcessor(BaseProcessor):
             aperture[:m] = np.linalg.norm(
                 kpts_rf[:m, THUMB_TIP_IDX] - kpts_rf[:m, INDEX_TIP_IDX], axis=1
             )
-            hands[side] = {"fingertips": fingertips, "detected": det, "aperture": aperture}
+            fps_cam = np.zeros((n, len(FINGERTIP_IDXS), 3), dtype=np.float32)
+            fps_cam[:m] = kpts_cam[:m][:, FINGERTIP_IDXS, :].astype(np.float32)
+            hands[side] = {
+                "fingertips": fingertips,
+                "fingertips_cam": fps_cam,
+                "detected": det,
+                "aperture": aperture,
+            }
             logger.info("[intent] loaded %s hand: %d/%d detected", side, int(det.sum()), n)
         return hands
 

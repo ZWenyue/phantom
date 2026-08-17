@@ -202,12 +202,30 @@ class _UnavailableProcessor:
         )
 
 
+def _requested_modes(cfg: DictConfig) -> list:
+    """Modes this Hydra run will actually instantiate (not the full registry)."""
+    if isinstance(cfg.mode, str):
+        modes = [m.strip() for m in cfg.mode.split(",")] if "," in cfg.mode else [cfg.mode]
+    else:
+        modes = list(cfg.mode)
+    if "all" in modes:
+        return list(PROCESSOR_REGISTRY.keys())
+    return modes
+
+
 def get_processor_classes(cfg: DictConfig) -> dict:
-    """Lazily import processor classes; tolerate import failures per mode."""
+    """Lazily import processor classes; tolerate import failures per mode.
+
+    Only the requested modes are imported. Importing the full registry pulls in
+    mmcv/mmpose CUDA ops that collide with Grounding-DINO on some GPUs.
+    """
     import importlib
 
+    requested = set(_requested_modes(cfg))
     classes = {}
     for mode, (module_path, class_name) in PROCESSOR_REGISTRY.items():
+        if mode not in requested:
+            continue
         try:
             module = importlib.import_module(module_path)
             classes[mode] = getattr(module, class_name)

@@ -7,6 +7,7 @@ data/processed/*
 **/__pycache__/*
 *.pyc
 *.pth
+*.pt
 outputs/*
 phantom/outputs/*
 

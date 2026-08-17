@@ -1,0 +1,47 @@
+# EgoDex demo-0 — Stage C (retarget_inpaint) smoke test
+#
+# Uses existing hand_inpaint background + joint_pos from the legacy robot_inpaint
+# training labels as a q bridge (no RGB-D / intent / stageb on EgoDex).
+#
+# Usage (from phantom/):
+#   # 1) build q_trajectory bridge (once):
+#   python b/tools/egodex_q_bridge.py --demo 0
+#   # 2) render:
+#   export LD_LIBRARY_PATH="/usr/local/nvidia/lib64:${LD_LIBRARY_PATH:-}"
+#   export __EGL_VENDOR_LIBRARY_DIRS="${HOME}/.local/share/glvnd/egl_vendor.d"
+#   export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl
+#   python process_data.py --config-path=../b/configs \
+#       --config-name=egodex_panda_stagec_test mode=retarget_inpaint demo_num=0
+debug: true
+verbose: true
+skip_existing: false
+n_processes: 1
+data_root_dir: "/home/a26160/DATA/test_phantom"
+processed_data_root_dir: "/home/a26160/DATA/test_phantom_processed"
+demo_name: "egodex_basic_pick_place"
+
+mode: ["retarget_inpaint"]
+demo_num: 0
+
+debug_cameras: []
+
+# EgoDex / Panda shoulders legacy overlay settings (match egodex_panda.yaml)
+input_resolution: 1080
+output_resolution: 1080
+robot: "Panda"
+gripper: "Robotiq85"
+square: false
+epic: true
+bimanual_setup: "single_arm"
+target_hand: "left"
+constrained_hand: false
+depth_for_overlay: false
+render: false
+camera_intrinsics: "camera/camera_intrinsics_egodex.json"
+camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
+
+retarget_use_depth: false
+retarget_key_pos_thresh: 0.05
+retarget_vel_thresh: 1.0              # legacy IK joints can jump; bridge test only
+retarget_jerk_thresh: 0.08
+retarget_frame_pos_thresh: 0.08

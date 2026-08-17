@@ -36,15 +36,17 @@ camera_extrinsics: "camera/camera_extrinsics.json"
 
 # Intent processor (Stage A) settings
 object_prompt: "blue book"
-intent_dino_threshold: 0.25
+intent_dino_threshold: 0.01     # YOLO-World scores are much lower than Grounding-DINO
+intent_yolo_model: "yolov8x-worldv2.pt"
 intent_seed_stride: 3
-intent_seed_min_score: 0.35
+intent_seed_min_score: 0.01
 intent_depth_max: 3.0
 intent_min_object_pts: 50
 
 # Contact detection (Stage A, block 2)
 intent_contact_dist_in: 0.03         # fingertip-object dist to enter contact (m)
 intent_contact_dist_out: 0.05        # fingertip-object dist to exit contact (m)
+intent_contact_xy_inflate: 0.06      # wrap: use |Δz| when nearest visible pt is within this XY (m)
 intent_contact_min_valid: 5          # min frames w/ fingertip dist to use hand cue
 intent_contact_min_run: 3            # drop contact runs shorter than this (frames)
 intent_contact_motion_thresh: 0.004  # object-motion fallback threshold (m/frame)
