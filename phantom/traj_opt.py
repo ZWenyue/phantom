@@ -85,6 +85,31 @@ class TrajectoryOptimizer:
         self.cfg = cfg or TrajOptConfig()
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _project_parallel_jaw_rotvec(R_target: np.ndarray, R_cur: np.ndarray) -> np.ndarray:
+        """Reduced SO(3) residual for a parallel-jaw gripper.
+
+        Two symmetries are intentionally ignored:
+        1. rotation about the approach axis (target z / gripper self-spin);
+        2. swapping jaws via a 180-degree flip around that same axis.
+        """
+        Rt = np.asarray(R_target, dtype=float).reshape(3, 3)
+        Rc = np.asarray(R_cur, dtype=float).reshape(3, 3)
+        z = Rt[:, 2]
+        z = z / max(float(np.linalg.norm(z)), 1e-9)
+        P = np.eye(3) - np.outer(z, z)
+
+        R_pi = Rotation.from_rotvec(np.pi * z).as_matrix()
+        cands = [Rt, Rt @ R_pi]
+        best = None
+        for R_ref in cands:
+            rv = Rotation.from_matrix(R_ref @ Rc.T).as_rotvec()
+            rv_proj = P @ rv
+            norm = float(np.linalg.norm(rv_proj))
+            if best is None or norm < best[0]:
+                best = (norm, rv_proj)
+        return best[1] if best is not None else np.zeros(3, dtype=float)
+
     def optimize(
         self,
         p_target: np.ndarray,     # (n,3) world-frame EE position targets
@@ -141,8 +166,7 @@ class TrajectoryOptimizer:
             for t in range(n):
                 r[off_pos + 3 * t: off_pos + 3 * t + 3] = wp_eff[t] * (pos[t] - p_target[t])
                 if w_r[t] != 0.0:
-                    R_err = R_target[t] @ Rs[t].T
-                    rv = Rotation.from_matrix(R_err).as_rotvec()
+                    rv = self._project_parallel_jaw_rotvec(R_target[t], Rs[t])
                     r[off_ori + 3 * t: off_ori + 3 * t + 3] = w_r[t] * rv
             # 2nd-order smoothness on interior frames
             if n_smooth:
@@ -166,8 +190,11 @@ class TrajectoryOptimizer:
                 if wp_eff[t] != 0.0:
                     J[off_pos + 3 * t: off_pos + 3 * t + 3, c0:c0 + m] = wp_eff[t] * jacp
                 if w_r[t] != 0.0:
-                    # d/dq rotvec(R_tgt R_cur^T) ≈ -jacr (world angular Jacobian, GN approx)
-                    J[off_ori + 3 * t: off_ori + 3 * t + 3, c0:c0 + m] = -w_r[t] * jacr
+                    z = np.asarray(R_target[t], dtype=float)[:, 2]
+                    z = z / max(float(np.linalg.norm(z)), 1e-9)
+                    P = np.eye(3) - np.outer(z, z)
+                    # d/dq rotvec(R_tgt R_cur^T) ≈ -jacr; drop the free spin axis.
+                    J[off_ori + 3 * t: off_ori + 3 * t + 3, c0:c0 + m] = -w_r[t] * (P @ jacr)
             # smoothness: constant tri-diagonal blocks (+1, -2, +1)
             for k in range(max(n - 2, 0)):
                 r0 = off_smooth + k * m
@@ -206,10 +233,14 @@ class TrajectoryOptimizer:
         Q = sol.x.reshape(n, m)
 
         # Report per-frame tracking residuals (unweighted, physical units).
+        # Orientation uses the *symmetry-reduced* parallel-jaw error (approach-
+        # axis self-spin + 180-degree jaw flip ignored) so the metric matches
+        # what the optimizer penalizes; a full-SO(3) norm would inflate to ~pi
+        # for freely-spun-but-physically-identical grasps.
         pos, Rs = _fk_all(Q)
         pos_err = np.linalg.norm(pos - p_target, axis=1)               # meters
         ori_err = np.array([
-            float(np.linalg.norm(Rotation.from_matrix(R_target[t] @ Rs[t].T).as_rotvec()))
+            float(np.linalg.norm(self._project_parallel_jaw_rotvec(R_target[t], Rs[t])))
             for t in range(n)
         ])                                                             # radians
         jerk = (Q[2:] - 2 * Q[1:-1] + Q[:-2]) if n > 2 else np.zeros((0, m))

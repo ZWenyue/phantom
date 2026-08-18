@@ -47,6 +47,8 @@ class DetectorSam2:
         self.model_cfg = model_cfg
         self._video_predictor = None
         self._image_predictor = None
+        self._video_state = None
+        self._video_state_dir = None
 
     @property
     def video_predictor(self):
@@ -74,6 +76,47 @@ class DetectorSam2:
         if mask.ndim == 3:
             mask = mask[0]
         return mask
+
+    def segment_points(
+        self,
+        image_rgb: np.ndarray,
+        pos_uv: np.ndarray,
+        neg_uv: Optional[np.ndarray] = None,
+        multimask_output: bool = True,
+    ) -> Tuple[np.ndarray, float]:
+        """Single-frame SAM2 mask from positive/negative point prompts.
+
+        ``pos_uv`` / ``neg_uv`` are (N, 2) pixel coords in the image. Returns
+        ``(mask, score)`` where mask is (H, W) uint8 {0,1}. When
+        ``multimask_output`` is True the highest-scoring candidate is kept.
+        """
+        pos = np.asarray(pos_uv, dtype=np.float32).reshape(-1, 2)
+        if pos.size == 0:
+            h, w = image_rgb.shape[:2]
+            return np.zeros((h, w), dtype=np.uint8), 0.0
+        if neg_uv is None or len(np.asarray(neg_uv).reshape(-1, 2)) == 0:
+            neg = np.zeros((0, 2), dtype=np.float32)
+        else:
+            neg = np.asarray(neg_uv, dtype=np.float32).reshape(-1, 2)
+        coords = np.concatenate([pos, neg], axis=0)
+        labels = np.concatenate(
+            [np.ones(len(pos), dtype=np.int32), np.zeros(len(neg), dtype=np.int32)]
+        )
+        pred = self.image_predictor
+        with torch.inference_mode(), torch.autocast(self.device, dtype=torch.bfloat16):
+            pred.set_image(image_rgb)
+            masks, scores, _ = pred.predict(
+                point_coords=coords,
+                point_labels=labels,
+                multimask_output=bool(multimask_output),
+            )
+        masks = np.asarray(masks)
+        scores = np.asarray(scores, dtype=np.float32).reshape(-1)
+        k = int(np.argmax(scores))
+        mask = np.asarray(masks[k] > 0, dtype=np.uint8)
+        if mask.ndim == 3:
+            mask = mask[0]
+        return mask, float(scores[k])
     
     def segment_video(self, video_dir: Path, bbox: np.ndarray, points: np.ndarray, 
                       indices: int, reverse: bool=False, output_bboxes: Optional[np.ndarray]=None):
@@ -196,7 +239,13 @@ class DetectorSam2:
         """
         return self.segment_video_from_masks(video_dir, [(mask, frame_idx)], reverse=reverse)
 
-    def segment_video_from_masks(self, video_dir: str, mask_frame_pairs: list, reverse=False):
+    def segment_video_from_masks(
+        self,
+        video_dir: str,
+        mask_frame_pairs: list,
+        reverse=False,
+        max_frame_num_to_track: Optional[int] = None,
+    ):
         """
         Propagate multiple segmentation masks through video frames.
 
@@ -209,6 +258,7 @@ class DetectorSam2:
             video_dir: Directory containing video frames
             mask_frame_pairs: List of (mask, frame_idx) tuples
             reverse: If True, propagate backward in time
+            max_frame_num_to_track: Optional cap on how many frames to propagate
 
         Returns:
             frame_indices: Sorted list of frame indices
@@ -221,12 +271,17 @@ class DetectorSam2:
             for mask, frame_idx in mask_frame_pairs:
                 self.video_predictor.add_new_mask(state, frame_idx, 0, mask)
 
+            kwargs = {}
+            if max_frame_num_to_track is not None:
+                kwargs["max_frame_num_to_track"] = int(max_frame_num_to_track)
             video_segments = {}
             for (
                 out_frame_idx,
                 out_obj_ids,
                 out_mask_logits,
-            ) in self.video_predictor.propagate_in_video(state, reverse=reverse):
+            ) in self.video_predictor.propagate_in_video(
+                state, reverse=reverse, **kwargs
+            ):
                 video_segments[out_frame_idx] = {
                     out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
                     for i, out_obj_id in enumerate(out_obj_ids)
@@ -236,6 +291,55 @@ class DetectorSam2:
 
         frame_indices = sorted(video_segments.keys())
         return frame_indices, video_segments
+
+    def _ensure_video_state(self, video_dir: str):
+        path = str(video_dir)
+        if self._video_state is None or self._video_state_dir != path:
+            with torch.inference_mode(), torch.autocast(self.device, dtype=torch.bfloat16):
+                self._video_state = self.video_predictor.init_state(video_path=path)
+            self._video_state_dir = path
+        return self._video_state
+
+    def clear_video_state(self) -> None:
+        self._video_state = None
+        self._video_state_dir = None
+        torch.cuda.empty_cache()
+
+    def propagate_mask_window(
+        self,
+        video_dir: str,
+        mask: np.ndarray,
+        frame_idx: int,
+        window: int,
+    ) -> dict:
+        """Propagate ``mask`` at ``frame_idx`` for ``window`` steps each way.
+
+        Reuses a cached SAM2 video state so scoring many candidates does not
+        reload JPEG frames. Returns ``{frame_idx: (H, W) uint8}``.
+        """
+        m = np.asarray(mask)
+        while m.ndim > 2:
+            m = m[0]
+        m = m > 0
+        max_n = int(window) + 1
+        segs = {}
+        with torch.inference_mode(), torch.autocast(self.device, dtype=torch.bfloat16):
+            state = self._ensure_video_state(video_dir)
+            for reverse in (False, True):
+                self.video_predictor.reset_state(state)
+                self.video_predictor.add_new_mask(state, int(frame_idx), 0, m)
+                for (
+                    out_frame_idx,
+                    out_obj_ids,
+                    out_mask_logits,
+                ) in self.video_predictor.propagate_in_video(
+                    state, reverse=reverse, max_frame_num_to_track=max_n,
+                ):
+                    raw = (out_mask_logits[0] > 0.0).cpu().numpy()
+                    while raw.ndim > 2:
+                        raw = raw[0]
+                    segs[int(out_frame_idx)] = (raw > 0).astype(np.uint8)
+        return segs
 
     @staticmethod
     def show_mask(mask: np.ndarray, ax: Axes, random_color: bool=False, borders: bool = True) -> None:

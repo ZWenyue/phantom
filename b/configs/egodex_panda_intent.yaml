@@ -35,6 +35,8 @@ render: false
 camera_intrinsics: "camera/camera_intrinsics_egodex.json"
 camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
 
+# object_prompt is optional with intent_track_backend=hand_sam2 (hand-anchored).
+# Kept as a YOLO fallback if GT hands are missing.
 object_prompt: "black stapler"
 intent_dino_threshold: 0.01     # YOLO-World scores are much lower than Grounding-DINO
 intent_yolo_model: "/home/a26160/SRC/phantom/yolov8x-worldv2.pt"
@@ -44,7 +46,27 @@ intent_seed_prefer_dark: auto   # prompt has black/dark → rank YOLO boxes by d
 intent_seed_dark_luma: 60
 intent_seed_score_keep: 0.2     # only re-rank boxes with score >= this * top score
 intent_seed_tighten_dark: true  # shrink the seed box to the dark core before SAM
-intent_track_stride: 1       # YOLO+SAM every frame; hold on miss
+intent_track_backend: hand_sam2  # hand_sam2 (default) | yolo
+intent_seed_grounding: auto      # auto: VLM in-hand box then geom; vlm | geom
+intent_seed_detector: owlv2      # owlv2 (stronger on rare nouns, e.g. macaron) | yolo
+intent_seed_approach_window: 8   # frames before seed used as "approach" speed (v1 fallback)
+intent_seed_hold_window: 8       # frames after seed used as "hold" speed (v1 fallback)
+intent_seed_move_vel: 0.01       # m/frame; fingertip speed floor for moving-hand frames
+intent_seed_move_run: 4          # min consecutive moving frames to count as a moving run
+intent_seed_global_stride: 5     # v3: sample candidates across ALL moving-hand runs
+intent_seed_cand_k: 5            # v2 equally spaced in one window; unused by v3 (stride instead)
+intent_seed_probe_win: 8         # ±frames of SAM2 video used to score each candidate
+intent_hand_dilate_px: 25        # GT-keypoint skeleton/palm dilation for the hand region
+intent_track_hand_overlap_max: 0.5  # |mask ∩ hand| / |mask|; above → reject candidate / QA fail
+intent_track_static_bonus_w: 0.3 # probe score += w * static_bonus (still-then-move vs always-still)
+intent_track_min_disp: 0.05      # m; grasp/transport net object displacement below this → QA fail
+intent_track_max_area_frac: 0.20 # reject seed masks larger than this fraction of the image
+intent_track_neg_exclude_px: 28  # don't put SAM negatives this close to the pinch centre
+intent_track_reseed_max: 2       # extra hand-conditioned seeds if video track fails the gate
+intent_track_motion_corr_min: 0.3  # in-hand corr(obj_vel, tip_vel); below → QA fail
+intent_track_static_vel_max: 0.02  # m/frame; free-phase object speed above this → drift
+intent_track_attach_err_max: 0.06  # m; |obj_t − (obj_{t-1}+Δtip)| above this → not attached
+intent_track_stride: 1       # YOLO+SAM every frame; hold on miss (yolo backend)
 intent_track_iou: 0.15       # IoU(prev mask, box) to keep instance; else re-id by YOLO score
 intent_track_hand_px: 200    # jump to a box whose centre is within this many px of target-hand tips
 intent_track_max_area_ratio: 3.5  # ignore YOLO boxes much larger than the previous mask
@@ -60,6 +82,8 @@ egodex_root: "/home/a26160/DATA/test"
 egodex_task: "basic_pick_place"
 intent_depth_max: 3.0
 intent_min_object_pts: 50
+intent_centroid_smooth_win: 5      # temporal moving-average width on centroid target track
+intent_centroid_reject_m: 0.05     # reject centroid frames >5cm from local median (small-obj depth jitter)
 
 intent_contact_dist_in: 0.03
 intent_contact_dist_out: 0.05
@@ -78,7 +102,7 @@ intent_grasp_antipodal_pct: 2.0
 intent_wp_free: 1.0
 intent_wr_free: 0.1
 intent_wp_grasp: 5.0
-intent_wr_grasp: 5.0
+intent_wr_grasp: 2.5
 
 stageb_warm_start: true
 stageb_grip_rot_offset_deg: 90.0
@@ -87,7 +111,7 @@ stageb_w_smooth: 1.0
 stageb_w_reg: 0.01
 stageb_w_vel: 0.0
 stageb_dq_max: 0.3
-stageb_max_nfev: 200
+stageb_max_nfev: 2000            # 200 hits the cap on T=160 (success=False, ~13s)
 
 retarget_use_depth: false
 retarget_key_pos_thresh: 0.03

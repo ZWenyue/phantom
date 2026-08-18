@@ -40,6 +40,7 @@ intent_dino_threshold: 0.01     # YOLO-World scores are much lower than Groundin
 intent_yolo_model: "yolov8x-worldv2.pt"
 intent_seed_stride: 3
 intent_seed_min_score: 0.01
+intent_track_backend: yolo   # Zed sample: keep YOLO; EgoDex uses hand_sam2
 intent_track_stride: 3
 intent_track_iou: 0.15
 intent_track_hand_px: 160    # 0 disables; jump to a box near target-hand UV

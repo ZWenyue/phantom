@@ -41,8 +41,31 @@ class GantryZArm:
         return jacp, jacr
 
 
+class GantryXArm:
+    n_dof = 7
+
+    def __init__(self):
+        self.q_min = np.array([-3, -3, -3, -np.pi, -3, -3, -3], dtype=float)
+        self.q_max = np.array([3, 3, 3, np.pi, 3, 3, 3], dtype=float)
+        self.q_neutral = np.zeros(7)
+
+    def fk(self, q):
+        pos = q[:3].copy()
+        R = Rotation.from_euler("x", q[3]).as_matrix()
+        return pos, R
+
+    def jac(self, q):
+        jacp = np.zeros((3, 7)); jacp[0, 0] = jacp[1, 1] = jacp[2, 2] = 1.0
+        jacr = np.zeros((3, 7)); jacr[0, 3] = 1.0  # world angular vel about x per dq3
+        return jacp, jacr
+
+
 def _rz_targets(thetas):
     return np.stack([Rotation.from_euler("z", th).as_matrix() for th in thetas])
+
+
+def _rx_targets(thetas):
+    return np.stack([Rotation.from_euler("x", th).as_matrix() for th in thetas])
 
 
 def test_position_tracking():
@@ -63,21 +86,54 @@ def test_position_tracking():
 
 
 def test_orientation_tracking():
-    kin = GantryZArm()
+    kin = GantryXArm()
     n = 25
     t = np.linspace(0, 1, n)
-    thetas = 1.2 * np.sin(np.pi * t)  # smooth yaw sweep within limits
+    thetas = 1.2 * np.sin(np.pi * t)  # smooth tilt sweep within limits
+    p_target = np.zeros((n, 3))
+    R_target = _rx_targets(thetas)
+    w_p = np.ones(n); w_r = 5.0 * np.ones(n)
+    opt = TrajectoryOptimizer(kin, TrajOptConfig(w_smooth=0.05, w_reg=1e-4))
+    out = opt.optimize(p_target, R_target, w_p, w_r)
+    assert out["ori_err"].max() < 1e-2, f"ori_err too high: {out['ori_err'].max()}"
+    # recovered wrist angle should match the target tilt.
+    q3 = out["q"][:, 3]
+    assert np.allclose(q3, thetas, atol=1e-2), f"tilt mismatch, max |dq3|={np.abs(q3-thetas).max()}"
+    print(f"[ori] ori_err mean={out['ori_err'].mean():.5f} max={out['ori_err'].max():.5f} "
+          f"tilt_err_max={np.abs(q3-thetas).max():.5f}")
+
+
+def test_parallel_jaw_spin_is_free():
+    kin = GantryZArm()
+    n = 20
+    t = np.linspace(0, 1, n)
+    thetas = 1.0 * np.sin(np.pi * t)
     p_target = np.zeros((n, 3))
     R_target = _rz_targets(thetas)
     w_p = np.ones(n); w_r = 5.0 * np.ones(n)
     opt = TrajectoryOptimizer(kin, TrajOptConfig(w_smooth=0.05, w_reg=1e-4))
     out = opt.optimize(p_target, R_target, w_p, w_r)
-    assert out["ori_err"].max() < 1e-2, f"ori_err too high: {out['ori_err'].max()}"
-    # recovered wrist angle should match the target yaw.
     q3 = out["q"][:, 3]
-    assert np.allclose(q3, thetas, atol=1e-2), f"yaw mismatch, max |dq3|={np.abs(q3-thetas).max()}"
-    print(f"[ori] ori_err mean={out['ori_err'].mean():.5f} max={out['ori_err'].max():.5f} "
-          f"yaw_err_max={np.abs(q3-thetas).max():.5f}")
+    # Rotation about target z is intentionally unconstrained.
+    assert np.allclose(q3, 0.0, atol=2e-2), q3
+    reduced = np.array([
+        np.linalg.norm(opt._project_parallel_jaw_rotvec(R_target[i], kin.fk(out["q"][i])[1]))
+        for i in range(n)
+    ])
+    assert reduced.max() < 1e-3, reduced.max()
+
+
+def test_parallel_jaw_180_flip_is_equivalent():
+    kin = GantryXArm()
+    p_target = np.zeros((1, 3))
+    R_target = Rotation.from_euler("xz", [0.4, np.pi]).as_matrix()[None]
+    w_p = np.ones(1); w_r = 5.0 * np.ones(1)
+    opt = TrajectoryOptimizer(kin, TrajOptConfig(w_smooth=0.0, w_reg=1e-4))
+    out = opt.optimize(p_target, R_target, w_p, w_r)
+    # The arm can only realize the x tilt; the extra 180° spin about z is free.
+    assert abs(float(out["q"][0, 3]) - 0.4) < 1e-2, out["q"][0, 3]
+    reduced = np.linalg.norm(opt._project_parallel_jaw_rotvec(R_target[0], kin.fk(out["q"][0])[1]))
+    assert reduced < 1e-3, reduced
 
 
 def test_smoothness_denoises():
@@ -104,5 +160,7 @@ def test_smoothness_denoises():
 if __name__ == "__main__":
     test_position_tracking()
     test_orientation_tracking()
+    test_parallel_jaw_spin_is_free()
+    test_parallel_jaw_180_flip_is_equivalent()
     test_smoothness_denoises()
     print("OK: traj_opt smoke tests passed")

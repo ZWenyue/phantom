@@ -78,6 +78,7 @@ class Paths:
         self.grasp_preview = self.intent_processor / "grasp_preview.png"
         self.intent = self.intent_processor / "intent.npz"
         self.intent_preview = self.intent_processor / "intent_preview.png"
+        self.track_quality = self.intent_processor / "track_quality.npz"
 
         # Stage B (whole-trajectory optimization) output.
         self.stageb_processor = self.data_path / "stageb_processor"

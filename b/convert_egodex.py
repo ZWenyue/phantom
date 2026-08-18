@@ -294,6 +294,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum number of episodes to convert (default: all)",
     )
     parser.add_argument(
+        "--demo",
+        type=int,
+        default=None,
+        help="Convert a single episode id (HDF5 stem / output folder name)",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing converted episodes",
@@ -314,6 +320,12 @@ def main() -> None:
         [f for f in task_dir.iterdir() if f.suffix == ".hdf5"],
         key=lambda x: int(x.stem),
     )
+
+    if args.demo is not None:
+        hdf5_files = [task_dir / f"{args.demo}.hdf5"]
+        if not hdf5_files[0].is_file():
+            print(f"Error: missing {hdf5_files[0]}")
+            sys.exit(1)
 
     if not hdf5_files:
         print(f"Error: no HDF5 files found in {task_dir}")
@@ -338,7 +350,9 @@ def main() -> None:
             print(f"  [{idx}] Skipping {episode_id}: no video file")
             continue
 
-        output_dir = output_base / str(idx)
+        # --demo writes to the HDF5 stem; bulk convert keeps enumeration index
+        # (legacy: 0.hdf5, 1.hdf5, … → folders 0, 1, …).
+        output_dir = output_base / episode_id if args.demo is not None else output_base / str(idx)
 
         if output_dir.exists() and not args.overwrite:
             print(f"  [{idx}] Skipping {episode_id}: already exists")
