@@ -1,25 +1,19 @@
 """
 Hand Inpainting Processor Module
 
-This module removes human hands from demonstration videos using the E2FGVI model. 
+Removes human hands from demonstration videos. Default backend is ProPainter
+(subprocess into a separate conda env). E2FGVI remains as ``inpaint_backend=e2fgvi``.
 
-Paper:
-Towards An End-to-End Framework for Flow-Guided Video Inpainting
-https://github.com/MCG-NKU/E2FGVI.git
-
-Processing Pipeline:
-1. Load pre-trained E2FGVI model and initialize GPU processing
-2. Read input video frames and corresponding hand segmentation masks
-3. Process frames in batches with neighboring temporal context
-4. Apply mask-guided inpainting to remove hand regions
-5. Verify complete processing and handle any missed frames
-6. Save final hand-free video for robot learning applications
+Outputs ``inpaint_processor/video_human_inpaint.mkv`` for retarget overlay.
 """
 
 import cv2
 from PIL import Image
 import numpy as np
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from tqdm import tqdm
 import torch
@@ -30,67 +24,99 @@ from typing import List, Tuple, Optional, Any, Union
 
 from phantom.processors.base_processor import BaseProcessor
 from phantom.utils.data_utils import get_parent_folder_of_package
-from E2FGVI.model.e2fgvi_hq import InpaintGenerator  # type: ignore
-from E2FGVI.core.utils import to_tensors  # type: ignore
 
 DEFAULT_CHECKPOINT = 'E2FGVI/release_model/E2FGVI-HQ-CVPR22.pth'
+DEFAULT_PROPAINTER_ROOT = '/home/a26160/SRC/ProPainter'
 
 logger = logging.getLogger(__name__)
 
 class HandInpaintProcessor(BaseProcessor): 
-    """
-    Hand inpainting processor for removing human hands from demonstration videos.
-    
-    Attributes:
-        model: E2FGVI neural network model for video inpainting
-        device: GPU/CPU device for model execution
-        ref_length (int): Spacing between reference frames for temporal consistency
-        num_ref (int): Number of reference frames to use (-1 for automatic)
-        neighbor_stride (int): Spacing between neighboring frames in temporal context
-        batch_size (int): Number of frame groups to process simultaneously
-        scale_factor (int): Resolution scaling factor for processing optimization
-    """
+    """Remove hands from demo videos (ProPainter CLI or E2FGVI)."""
     
     def __init__(self, args: Any) -> None:
         """
-        Initialize the hand inpainting processor with E2FGVI model and parameters.
-        
+        Initialize the hand inpainting processor.
+
         Args:
-            args: Command line arguments containing processing configuration
-                 including scale factor and other inpainting parameters
+            args: Hydra config. ``inpaint_backend`` is ``propainter`` (default)
+                or ``e2fgvi``. ProPainter runs in a separate Python env.
         """
         super().__init__(args)
-        
-        # Load pre-trained E2FGVI model
-        root_dir = get_parent_folder_of_package("E2FGVI")
-        checkpoint_path = Path(root_dir, DEFAULT_CHECKPOINT)
+
+        self.inpaint_backend: str = str(
+            getattr(args, 'inpaint_backend', 'propainter') or 'propainter'
+        ).lower()
+        self.model = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._to_tensors = None
 
-        # Initialize and load the inpainting model
-        self.model = InpaintGenerator().to(self.device)
-        data = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(data)
-        self.model.eval()
+        # E2FGVI temporal / batch knobs (unused by ProPainter CLI)
+        self.ref_length: int = 20
+        self.num_ref: int = -1
+        self.neighbor_stride: int = 5
+        self.batch_size: int = 10
+        self.scale_factor: int = getattr(args, 'scale_factor', 2)
 
-        # Configure temporal processing parameters
-        self.ref_length: int = 20        # Spacing between reference frames
-        self.num_ref: int = -1           # Number of reference frames (-1 = automatic)
-        self.neighbor_stride: int = 5    # Stride for neighboring frame selection
-
-        # Configure batch processing parameters for memory optimization
-        self.batch_size: int = 10        # Number of frame groups per batch
-        self.scale_factor: int = getattr(args, 'scale_factor', 2)  # Resolution scaling
-
-        # Mask dilation parameters (configurable via Hydra config)
         morph_type_str = getattr(args, 'mask_dilate_kernel', 'MORPH_ELLIPSE')
         self.mask_dilate_type: int = getattr(cv2, morph_type_str, cv2.MORPH_ELLIPSE)
         self.mask_dilate_size: int = getattr(args, 'mask_dilate_size', 3)
         self.mask_dilate_iterations: int = getattr(args, 'mask_dilate_iterations', 4)
 
-        # Inpaint resolution: E2FGVI works best at low res (~240-480p).
-        # 0 means use the frame size as-is (legacy behavior).
+        # Downscale before inpaint to save GPU memory. 0 = native frame size.
         self.inpaint_resolution: int = getattr(args, 'inpaint_resolution', 0)
         self._original_size: Optional[Tuple[int, int]] = None
+
+        self.propainter_root: Path = Path(
+            getattr(args, 'propainter_root', DEFAULT_PROPAINTER_ROOT)
+            or DEFAULT_PROPAINTER_ROOT
+        )
+        self.propainter_python: str = str(
+            getattr(args, 'propainter_python', '') or os.environ.get('PROPAINTER_PYTHON', '')
+        ).strip()
+        self.propainter_fp16: bool = bool(getattr(args, 'propainter_fp16', True))
+        self.propainter_subvideo_length: int = int(getattr(args, 'propainter_subvideo_length', 80))
+        self.propainter_neighbor_length: int = int(getattr(args, 'propainter_neighbor_length', 10))
+        self.propainter_ref_stride: int = int(getattr(args, 'propainter_ref_stride', 10))
+
+        if self.inpaint_backend == 'e2fgvi':
+            self._init_e2fgvi()
+        elif self.inpaint_backend == 'propainter':
+            self._validate_propainter()
+        else:
+            raise ValueError(
+                f"Unknown inpaint_backend={self.inpaint_backend!r}; "
+                "use 'propainter' or 'e2fgvi'"
+            )
+
+    def _init_e2fgvi(self) -> None:
+        from E2FGVI.model.e2fgvi_hq import InpaintGenerator  # type: ignore
+        from E2FGVI.core.utils import to_tensors  # type: ignore
+
+        root_dir = get_parent_folder_of_package("E2FGVI")
+        checkpoint_path = Path(root_dir, DEFAULT_CHECKPOINT)
+        self.model = InpaintGenerator().to(self.device)
+        data = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(data)
+        self.model.eval()
+        self._to_tensors = to_tensors
+
+    def _validate_propainter(self) -> None:
+        script = self.propainter_root / 'inference_propainter.py'
+        if not script.is_file():
+            raise FileNotFoundError(
+                f"ProPainter inference script not found: {script}. "
+                "Set propainter_root to the ProPainter repo."
+            )
+        if not self.propainter_python:
+            raise ValueError(
+                "inpaint_backend=propainter requires propainter_python "
+                "(path to that conda env's python), e.g. "
+                ".../envs/propainter/bin/python. Do not use phantom's interpreter."
+            )
+        if not os.path.isfile(self.propainter_python):
+            raise FileNotFoundError(
+                f"propainter_python is not a file: {self.propainter_python}"
+            )
 
     def _clear_gpu_memory(self) -> None:
         """Clear GPU memory cache and trigger garbage collection."""
@@ -110,19 +136,28 @@ class HandInpaintProcessor(BaseProcessor):
         if not os.path.exists(paths.inpaint_processor):
             os.makedirs(paths.inpaint_processor)
 
+        if not os.path.exists(paths.masks_arm):
+            raise FileNotFoundError(
+                f"Need arm_segmentation masks before hand_inpaint: {paths.masks_arm}"
+            )
+
+        if self.skip_existing and os.path.exists(paths.video_human_inpaint):
+            logger.info("skip existing %s", paths.video_human_inpaint)
+            return
+
         self._process_frames(paths)
     
     def _process_frames(self, paths: Any) -> None:
-        """
-        Process all video frames to remove hand regions using E2FGVI inpainting.
-        
-        Args:
-            paths: Paths object containing input video and mask file locations
-        """
-        # Load and prepare video frames
+        """Remove hand regions; dispatch on ``inpaint_backend``."""
         frames = self._load_and_prepare_frames(paths)
         video_length = len(frames)
-        logger.info(f"Processing {video_length} frames")
+        logger.info("Processing %d frames with backend=%s", video_length, self.inpaint_backend)
+
+        if self.inpaint_backend == 'propainter':
+            self._process_frames_propainter(frames, paths)
+            return
+
+        # E2FGVI path below
         
         # Initialize tracking arrays for processed frames
         comp_frames: List[Optional[np.ndarray]] = [None] * video_length
@@ -171,6 +206,98 @@ class HandInpaintProcessor(BaseProcessor):
 
         return frames
 
+    @staticmethod
+    def _size_multiple_of_8(w: int, h: int) -> Tuple[int, int]:
+        return (max(8, w - (w % 8)), max(8, h - (h % 8)))
+
+    def _process_frames_propainter(self, frames: List[Image.Image], paths: Any) -> None:
+        """Dump frames/masks, run ProPainter CLI in its own env, write mkv."""
+        w, h = frames[0].width, frames[0].height
+        w8, h8 = self._size_multiple_of_8(w, h)
+        if (w8, h8) != (w, h):
+            logger.info("Rounding inpaint size to multiple of 8: (%d, %d) -> (%d, %d)", w, h, w8, h8)
+            frames, _ = self.resize_frames(frames, (w8, h8))
+            w, h = w8, h8
+
+        masks = self.read_mask(paths.masks_arm, (w, h))
+        if len(masks) != len(frames):
+            raise RuntimeError(
+                f"mask count {len(masks)} != frame count {len(frames)} ({paths.masks_arm})"
+            )
+
+        tmp_root = tempfile.mkdtemp(prefix="propainter_", dir=str(paths.inpaint_processor))
+        frames_dir = os.path.join(tmp_root, "video_frames")
+        masks_dir = os.path.join(tmp_root, "masks")
+        out_dir = os.path.join(tmp_root, "out")
+        os.makedirs(frames_dir)
+        os.makedirs(masks_dir)
+        os.makedirs(out_dir)
+
+        try:
+            n_pad = max(5, len(str(len(frames) - 1)))
+            for i, (frame, mask) in enumerate(zip(frames, masks)):
+                name = f"{i:0{n_pad}d}.png"
+                frame.save(os.path.join(frames_dir, name))
+                mask.save(os.path.join(masks_dir, name))
+
+            script = str(self.propainter_root / "inference_propainter.py")
+            cmd = [
+                self.propainter_python,
+                script,
+                "--video", frames_dir,
+                "--mask", masks_dir,
+                "--output", out_dir,
+                "--mask_dilation", "0",
+                "--save_frames",
+                "--width", str(w),
+                "--height", str(h),
+                "--subvideo_length", str(self.propainter_subvideo_length),
+                "--neighbor_length", str(self.propainter_neighbor_length),
+                "--ref_stride", str(self.propainter_ref_stride),
+            ]
+            if self.propainter_fp16:
+                cmd.append("--fp16")
+
+            logger.info("ProPainter cwd=%s cmd=%s", self.propainter_root, " ".join(cmd))
+            proc = subprocess.run(
+                cmd,
+                cwd=str(self.propainter_root),
+                check=False,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"ProPainter exited {proc.returncode}. "
+                    "Check the propainter conda env and GPU memory."
+                )
+
+            result_dir = os.path.join(out_dir, "video_frames", "frames")
+            comp_frames = self._load_propainter_pngs(result_dir, len(frames))
+            self._verify_and_save_results(comp_frames, paths)
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+
+    @staticmethod
+    def _load_propainter_pngs(result_dir: str, expected: int) -> List[np.ndarray]:
+        if not os.path.isdir(result_dir):
+            raise FileNotFoundError(
+                f"ProPainter --save_frames dir missing: {result_dir}"
+            )
+        files = sorted(
+            [f for f in os.listdir(result_dir) if f.lower().endswith(".png")],
+            key=lambda x: int(os.path.splitext(x)[0]),
+        )
+        if len(files) != expected:
+            raise RuntimeError(
+                f"ProPainter wrote {len(files)} frames, expected {expected} in {result_dir}"
+            )
+        frames: List[np.ndarray] = []
+        for name in files:
+            bgr = cv2.imread(os.path.join(result_dir, name))
+            if bgr is None:
+                raise RuntimeError(f"failed to read {name} from {result_dir}")
+            frames.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        return frames
+
     def _process_frames_in_batches(self, frames: List[Image.Image], paths: Any, 
                                  comp_frames: List[Optional[np.ndarray]], 
                                  processed_frame_mask: List[bool]) -> None:
@@ -197,10 +324,10 @@ class HandInpaintProcessor(BaseProcessor):
                           batch_start: int, batch_end: int, h: int, w: int) -> dict:
         """Prepare batch data including frames, masks, and binary masks."""
         batch_frames = frames[batch_start:batch_end]
-        batch_imgs = to_tensors()(batch_frames).unsqueeze(0).to(self.device) * 2 - 1
+        batch_imgs = self._to_tensors()(batch_frames).unsqueeze(0).to(self.device) * 2 - 1
         
         batch_masks = self.read_mask(paths.masks_arm, (w, h))[batch_start:batch_end]
-        batch_masks = to_tensors()(batch_masks).unsqueeze(0).to(self.device)
+        batch_masks = self._to_tensors()(batch_masks).unsqueeze(0).to(self.device)
         
         binary_masks = self._create_binary_masks(paths.masks_arm, batch_start, batch_end, w, h)
         
@@ -335,10 +462,10 @@ class HandInpaintProcessor(BaseProcessor):
         
         # Prepare sequence data
         batch_frames = frames[start_idx:end_idx]
-        batch_imgs = to_tensors()(batch_frames).unsqueeze(0).to(self.device) * 2 - 1
+        batch_imgs = self._to_tensors()(batch_frames).unsqueeze(0).to(self.device) * 2 - 1
         
         batch_masks = self.read_mask(paths.masks_arm, (w, h))[start_idx:end_idx]
-        batch_masks = to_tensors()(batch_masks).unsqueeze(0).to(self.device)
+        batch_masks = self._to_tensors()(batch_masks).unsqueeze(0).to(self.device)
         
         binary_masks = self._create_binary_masks(paths.masks_arm, start_idx, end_idx, w, h)
         

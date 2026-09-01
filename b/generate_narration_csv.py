@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
         choices=("llm_description", "description"),
         help="HDF5 attribute to use as narration text (default: llm_description)",
     )
+    parser.add_argument("--demo", type=int, default=None, help="Export a single episode id")
     parser.add_argument(
         "--overwrite",
         action="store_true",
@@ -91,12 +92,19 @@ def main() -> None:
     if not task_dir.is_dir():
         raise SystemExit(f"Error: task directory not found: {task_dir}")
     if not demo_root.is_dir():
-        raise SystemExit(f"Error: processed directory not found: {demo_root}")
+        if args.demo is not None:
+            demo_root.mkdir(parents=True, exist_ok=True)
+        else:
+            raise SystemExit(f"Error: processed directory not found: {demo_root}")
 
     hdf5_files = sorted(
         task_dir.glob("*.hdf5"),
         key=lambda p: int(p.stem),
     )
+    if args.demo is not None:
+        hdf5_files = [task_dir / f"{args.demo}.hdf5"]
+        if not hdf5_files[0].is_file():
+            raise SystemExit(f"Error: missing {hdf5_files[0]}")
     if not hdf5_files:
         raise SystemExit(f"Error: no HDF5 files found in {task_dir}")
 
@@ -110,9 +118,12 @@ def main() -> None:
         out_path = demo_root / episode / "narration.csv"
 
         if not out_path.parent.is_dir():
-            print(f"skip {episode}: processed dir not found ({out_path.parent})")
-            skipped_no_processed += 1
-            continue
+            if args.demo is not None:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                print(f"skip {episode}: processed dir not found ({out_path.parent})")
+                skipped_no_processed += 1
+                continue
 
         if out_path.exists() and not args.overwrite:
             skipped_existing += 1

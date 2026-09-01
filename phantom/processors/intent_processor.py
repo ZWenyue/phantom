@@ -263,9 +263,9 @@ class IntentProcessor(BaseProcessor):
         need_prompt = self.track_backend != "hand_sam2"
         object_prompt = self._get_object_prompt(paths, required=need_prompt)
         logger.info(
-            "[intent] demo=%s backend=%s seed_detector=%s grounding=%s object_prompt=%r",
+            "[intent] demo=%s backend=%s seed_detector=%s grounding=%s object_prompt=%r sides=%s",
             data_sub_folder, self.track_backend, self.seed_detector,
-            self.seed_grounding, object_prompt,
+            self.seed_grounding, object_prompt, self.intent_sides(),
         )
 
         frames = self._load_frames(paths)  # (T, H, W, 3) RGB uint8
@@ -275,51 +275,125 @@ class IntentProcessor(BaseProcessor):
 
         # Depth is needed by the hand_sam2 motion gate as well as the point cloud.
         depth = self._load_depth(paths, n_frames, frames.shape[1:3])
+        hands = self._load_hand_fingertips(paths, n_frames)
 
-        # 1) object detection + mask tracking (or reuse a previous SAM run)
+        saved_hand = self.target_hand
+        per_hand: Dict[str, dict] = {}
+        try:
+            for side in self.intent_sides():
+                self.target_hand = side
+                hp = paths.for_hand(side) if self.contact_bimanual() else paths
+                bundle = self._run_hand_intent_front(
+                    hp, frames, object_prompt, n_frames, depth, hands,
+                )
+                if bundle is None:
+                    logger.warning("[intent] skipping side=%s (no masks)", side)
+                    continue
+                per_hand[side] = bundle
+        finally:
+            self.target_hand = saved_hand
+
+        if not per_hand:
+            return
+
+        primary = self._pick_place_primary(per_hand)
+        if self._want_place_workspace():
+            self.target_hand = primary
+            T_place = self._compute_T_place(
+                per_hand[primary]["pcd_result"],
+                hands,
+                per_hand[primary]["grasp_result"],
+                per_hand[primary]["contact_result"],
+            )
+            if T_place is not None:
+                self._T_place = T_place
+                if self._T_c2w is not None:
+                    self._T_c2r = np.einsum("ij,njk->nik", T_place, np.asarray(self._T_c2w))
+                self._apply_T_place(T_place, None, hands, None)
+                for bundle in per_hand.values():
+                    self._apply_T_place(
+                        T_place, bundle["pcd_result"], None, bundle["grasp_result"],
+                    )
+
+        for side, bundle in per_hand.items():
+            self.target_hand = side
+            hp = paths.for_hand(side) if self.contact_bimanual() else paths
+            intent_result = self._integrate_intent(
+                bundle["pcd_result"], bundle["contact_result"],
+                bundle["grasp_result"], hands,
+            )
+            self._save_results(
+                paths=hp,
+                object_prompt=object_prompt,
+                seed_idx=bundle["seed_idx"],
+                seed_score=bundle["seed_score"],
+                object_masks=bundle["object_masks"],
+                frames=frames,
+                pcd_result=bundle["pcd_result"],
+                contact_result=bundle["contact_result"],
+                grasp_result=bundle["grasp_result"],
+                intent_result=intent_result,
+            )
+        self.target_hand = saved_hand
+
+        # Compat aliases: unsuffixed files follow the T_place primary (usually right).
+        if self.contact_bimanual() and primary in per_hand:
+            src = paths.for_hand(primary)
+            import shutil
+            for attr in ("intent", "object_pcd", "object_masks", "contact_events", "track_quality"):
+                a, b = getattr(src, attr), getattr(paths, attr)
+                if os.path.exists(a) and Path(a).resolve() != Path(b).resolve():
+                    shutil.copy2(a, b)
+
+    def _run_hand_intent_front(
+        self,
+        paths: Paths,
+        frames: np.ndarray,
+        object_prompt: str,
+        n_frames: int,
+        depth: Optional[np.ndarray],
+        hands: Dict[str, dict],
+    ) -> Optional[dict]:
+        """Track + contact + grasp for ``self.target_hand`` (before shared T_place)."""
         object_masks, seed_idx, seed_bbox, seed_score = self._resolve_masks(
             paths, frames, object_prompt, n_frames, depth=depth,
         )
         if object_masks is None:
-            return
-
-        # 2) object point clouds from depth back-projection
+            return None
         pcd_result = self._build_object_pointclouds(frames, object_masks, depth)
-
-        # 3) contact detection + phase segmentation
-        hands = self._load_hand_fingertips(paths, len(object_masks))
         contact_result = self._detect_contacts(pcd_result, hands)
         self._last_track_qa = self._track_quality_gate(
             object_masks, pcd_result, contact_result, hands, seed_idx,
         )
         self._save_track_quality(paths, self._last_track_qa)
-
-        # 4) hand->gripper antipodal grasp synthesis (object-anchored G*)
         grasp_result = self._synthesize_grasp(pcd_result, contact_result, hands)
-
-        # 4b) rigid-place the frozen EgoDex world into the Panda workspace so
-        # G*/hands sit in front of the base instead of behind it.
-        if self._want_place_workspace():
-            pcd_result, hands, grasp_result = self._place_into_panda_workspace(
-                pcd_result, hands, grasp_result, contact_result
-            )
-
-        # 5) intent integration: unified per-frame task-space targets for Stage B
-        intent_result = self._integrate_intent(pcd_result, contact_result, grasp_result, hands)
-
-        # 6) save outputs + debug visualizations
-        self._save_results(
-            paths=paths,
-            object_prompt=object_prompt,
-            seed_idx=seed_idx,
-            seed_score=seed_score,
+        return dict(
             object_masks=object_masks,
-            frames=frames,
+            seed_idx=seed_idx,
+            seed_bbox=seed_bbox,
+            seed_score=seed_score,
             pcd_result=pcd_result,
             contact_result=contact_result,
             grasp_result=grasp_result,
-            intent_result=intent_result,
         )
+
+    @staticmethod
+    def _pick_place_primary(per_hand: Dict[str, dict]) -> str:
+        """Hand whose grasp anchors shared T_place. Prefer a valid grasp, then right."""
+        for side in ("right", "left"):
+            if side not in per_hand:
+                continue
+            if bool(per_hand[side]["grasp_result"].get("valid", False)):
+                return side
+        for side in ("right", "left"):
+            if side not in per_hand:
+                continue
+            kf = int(per_hand[side]["contact_result"].get("grasp_keyframe", -1))
+            if kf >= 0:
+                return side
+        if "right" in per_hand:
+            return "right"
+        return next(iter(per_hand))
 
     # ------------------------------------------------------------------
     # Object prompt / noun resolution
@@ -754,20 +828,16 @@ class IntentProcessor(BaseProcessor):
             out[valid] = transform_pts(pts[valid], T)
         return out.reshape(out_shape)
 
-    def _place_into_panda_workspace(
+    def _compute_T_place(
         self,
         pcd_result: Dict[str, list],
         hands: Dict[str, dict],
         grasp_result: Dict[str, object],
         contact_result: Dict[str, np.ndarray],
-    ) -> Tuple[Dict[str, list], Dict[str, dict], Dict[str, object]]:
-        """Left-multiply a constant T_place after T_camera freeze.
-
-        Intermediate robot frame is EgoDex world (T_c2r = T_c2w). After this
-        call, robot frame is the Panda workspace and T_c2r = T_place @ T_c2w.
-        """
+    ) -> Optional[np.ndarray]:
+        """World→workspace SE(3) from a reference grasp/centroid. Does not apply it."""
         if self._T_c2w is None:
-            return pcd_result, hands, grasp_result
+            return None
         T_c2w = np.asarray(self._T_c2w, dtype=np.float64)
         n = len(T_c2w)
         ref = int(np.clip(self.T_camera_ref, 0, n - 1))
@@ -782,29 +852,44 @@ class IntentProcessor(BaseProcessor):
             ok = np.asarray(pcd_result["valid"], dtype=bool) & np.isfinite(cents).all(axis=1)
             if not bool(np.any(ok)):
                 logger.warning("[intent] T_place skipped: no world-frame reference point")
-                return pcd_result, hands, grasp_result
+                return None
             p_ref = cents[ok].mean(axis=0)
         look = T_c2w[ref, :3, 2]
         T_place = self._place_T_w2r(p_ref, look, self.place_target)
-        self._T_place = T_place
-        self._T_c2r = np.einsum("ij,njk->nik", T_place, T_c2w)
+        g_r = self._apply_T_xyz(np.asarray(p_ref, dtype=np.float64), T_place)
+        logger.info(
+            "[intent] T_place: world ref %s -> robot %s (target %s)  look=%s",
+            np.round(np.asarray(p_ref, dtype=float), 3).tolist(),
+            np.round(g_r, 3).tolist(),
+            np.round(self.place_target, 3).tolist(),
+            np.round(look, 3).tolist(),
+        )
+        return T_place
 
-        pts_rf = []
-        for pts in pcd_result["points_robot"]:
-            pts = np.asarray(pts, dtype=np.float32)
-            pts_rf.append(
-                self._apply_T_xyz(pts, T_place).astype(np.float32) if len(pts) else pts
-            )
-        pcd_result["points_robot"] = pts_rf
-        pcd_result["centroids_robot"] = self._apply_T_xyz(
-            pcd_result["centroids_robot"], T_place
-        ).astype(np.float32)
-
-        for h in hands.values():
-            h["fingertips"] = self._apply_T_xyz(h["fingertips"], T_place).astype(np.float32)
-
-        R = T_place[:3, :3]
-        if bool(grasp_result.get("valid", False)):
+    def _apply_T_place(
+        self,
+        T_place: np.ndarray,
+        pcd_result: Optional[Dict[str, list]],
+        hands: Optional[Dict[str, dict]],
+        grasp_result: Optional[Dict[str, object]],
+    ) -> None:
+        """Apply a shared T_place in-place. Pass None to skip a bundle."""
+        R = np.asarray(T_place, dtype=np.float64)[:3, :3]
+        if pcd_result is not None:
+            pts_rf = []
+            for pts in pcd_result["points_robot"]:
+                pts = np.asarray(pts, dtype=np.float32)
+                pts_rf.append(
+                    self._apply_T_xyz(pts, T_place).astype(np.float32) if len(pts) else pts
+                )
+            pcd_result["points_robot"] = pts_rf
+            pcd_result["centroids_robot"] = self._apply_T_xyz(
+                pcd_result["centroids_robot"], T_place
+            ).astype(np.float32)
+        if hands is not None:
+            for h in hands.values():
+                h["fingertips"] = self._apply_T_xyz(h["fingertips"], T_place).astype(np.float32)
+        if grasp_result is not None and bool(grasp_result.get("valid", False)):
             grasp_result["G_center"] = self._apply_T_xyz(
                 np.asarray(grasp_result["G_center"]), T_place
             ).astype(np.float32)
@@ -822,14 +907,21 @@ class IntentProcessor(BaseProcessor):
                     np.asarray(grasp_result["contact_points"]), T_place
                 ).astype(np.float32)
 
-        g_r = self._apply_T_xyz(np.asarray(p_ref, dtype=np.float64), T_place)
-        logger.info(
-            "[intent] T_place: world ref %s -> robot %s (target %s)  look=%s",
-            np.round(np.asarray(p_ref, dtype=float), 3).tolist(),
-            np.round(g_r, 3).tolist(),
-            np.round(self.place_target, 3).tolist(),
-            np.round(look, 3).tolist(),
-        )
+    def _place_into_panda_workspace(
+        self,
+        pcd_result: Dict[str, list],
+        hands: Dict[str, dict],
+        grasp_result: Dict[str, object],
+        contact_result: Dict[str, np.ndarray],
+    ) -> Tuple[Dict[str, list], Dict[str, dict], Dict[str, object]]:
+        """Left-multiply a constant T_place after T_camera freeze (single-hand path)."""
+        T_place = self._compute_T_place(pcd_result, hands, grasp_result, contact_result)
+        if T_place is None:
+            return pcd_result, hands, grasp_result
+        self._T_place = T_place
+        if self._T_c2w is not None:
+            self._T_c2r = np.einsum("ij,njk->nik", T_place, np.asarray(self._T_c2w))
+        self._apply_T_place(T_place, pcd_result, hands, grasp_result)
         return pcd_result, hands, grasp_result
 
     def _T_cam2robot_at(self, i: int) -> np.ndarray:

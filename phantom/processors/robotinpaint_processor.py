@@ -822,13 +822,13 @@ class RobotInpaintProcessor(BaseProcessor):
         Returns:
             Tuple of (width, height) in pixels
         """
-        # Epic
-        if self.input_resolution == 256:
-            img_w = 456 
-        # Phantom paper
-        elif self.input_resolution == 1080:
-            img_w = self.input_resolution * 16 // 9
-        img_h = self.input_resolution
+        img_h = int(self.input_resolution)
+        # Epic 256p is 456×256; everything else is 16:9 (EgoDex / Phantom).
+        if img_h == 256:
+            img_w = 456
+        else:
+            img_w = img_h * 16 // 9
+            img_w -= img_w % 2
         return img_w, img_h
     
     def _calculate_image_offset(self, img_w: int, img_h: int) -> int:

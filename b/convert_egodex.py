@@ -17,8 +17,9 @@ Each HDF5 contains:
 
 Writes Phantom-ready demos:
     {output_root}/egodex_{task}/
+        convert_meta.json     -> scale + hydra camera overrides (if scaled)
         0/
-            video_L.mp4       -> symlink to original
+            video_L.mp4       -> symlink, or re-encoded if --scale/--height
             hand_det.pkl      -> generated from 3D projections
         1/
             ...
@@ -40,8 +41,9 @@ Then run Phantom:
 from __future__ import annotations
 
 import argparse
-import os
+import json
 import pickle
+import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -89,6 +91,109 @@ FINGER_JOINTS = {
 }
 
 BBOX_PADDING_RATIO = 0.15
+NATIVE_W = 1920
+NATIVE_H = 1080
+CAMERA_JSON_SRC = (
+    Path(__file__).resolve().parent.parent / "phantom" / "camera" / "camera_intrinsics_egodex.json"
+)
+
+
+def even(n: int) -> int:
+    n = max(2, int(n))
+    return n - (n % 2)
+
+
+def probe_video_wh(path: Path) -> Tuple[int, int]:
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x",
+        str(path),
+    ]
+    try:
+        out = subprocess.check_output(cmd, text=True).strip()
+        w_s, h_s = out.split("x")
+        return int(w_s), int(h_s)
+    except Exception:
+        pass
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(path))
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return NATIVE_W, NATIVE_H
+
+
+def resolve_target_wh(
+    src_w: int,
+    src_h: int,
+    scale: Optional[float],
+    height: Optional[int],
+) -> Tuple[int, int, float, float]:
+    if scale is not None and height is not None:
+        raise ValueError("pass only one of --scale or --height")
+    if height is not None:
+        if height <= 0:
+            raise ValueError("--height must be positive")
+        dst_h = even(height)
+        sy = dst_h / float(src_h)
+        dst_w = even(round(src_w * sy))
+        sx = dst_w / float(src_w)
+        return dst_w, dst_h, sx, sy
+    if scale is None or abs(scale - 1.0) < 1e-9:
+        return src_w, src_h, 1.0, 1.0
+    if scale <= 0:
+        raise ValueError("--scale must be positive")
+    dst_w = even(round(src_w * scale))
+    dst_h = even(round(src_h * scale))
+    return dst_w, dst_h, dst_w / float(src_w), dst_h / float(src_h)
+
+
+def scale_K(K: np.ndarray, sx: float, sy: float) -> np.ndarray:
+    Ks = np.asarray(K, dtype=np.float64).copy()
+    Ks[0, 0] *= sx
+    Ks[1, 1] *= sy
+    Ks[0, 2] *= sx
+    Ks[1, 2] *= sy
+    return Ks
+
+
+def write_scaled_camera_json(
+    src: Path,
+    dst: Path,
+    sx: float,
+    sy: float,
+) -> None:
+    with open(src, "r") as f:
+        data = json.load(f)
+    for side in data:
+        if not isinstance(data[side], dict):
+            continue
+        for key in ("fx", "fy", "cx", "cy"):
+            if key in data[side]:
+                s = sx if key in ("fx", "cx") else sy
+                data[side][key] = float(data[side][key]) * s
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst, "w") as f:
+        json.dump(data, f, indent=4)
+        f.write("\n")
+
+
+def encode_scaled_video(src: Path, dst: Path, width: int, height: int) -> None:
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src),
+        "-vf", f"scale={width}:{height}:flags=lanczos",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-an",
+        str(dst),
+    ]
+    subprocess.run(cmd, check=True)
 
 
 def project_world_to_image(
@@ -164,6 +269,8 @@ def generate_hand_det_pkl(
     hdf5_path: str,
     img_w: int = 1920,
     img_h: int = 1080,
+    sx: float = 1.0,
+    sy: float = 1.0,
 ) -> dict:
     """Generate hand_det.pkl data from EgoDex HDF5 file.
 
@@ -173,7 +280,7 @@ def generate_hand_det_pkl(
     hand_det = defaultdict(list)
 
     with h5py.File(hdf5_path, "r") as f:
-        K = f["camera/intrinsic"][:]
+        K = scale_K(f["camera/intrinsic"][:], sx, sy)
         T_c2w_all = f["transforms/camera"][:]
         n_frames = T_c2w_all.shape[0]
 
@@ -242,6 +349,9 @@ def convert_one_episode(
     output_dir: Path,
     img_w: int = 1920,
     img_h: int = 1080,
+    sx: float = 1.0,
+    sy: float = 1.0,
+    scale_video: bool = False,
 ) -> bool:
     """Convert a single EgoDex episode to Phantom format.
 
@@ -250,14 +360,15 @@ def convert_one_episode(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Symlink video
     video_link = output_dir / "video_L.mp4"
     if video_link.exists() or video_link.is_symlink():
         video_link.unlink()
-    video_link.symlink_to(video_path.resolve())
+    if scale_video:
+        encode_scaled_video(video_path, video_link, img_w, img_h)
+    else:
+        video_link.symlink_to(video_path.resolve())
 
-    # Generate hand_det.pkl
-    hand_det = generate_hand_det_pkl(str(hdf5_path), img_w, img_h)
+    hand_det = generate_hand_det_pkl(str(hdf5_path), img_w, img_h, sx=sx, sy=sy)
     pkl_path = output_dir / "hand_det.pkl"
     with open(pkl_path, "wb") as f:
         pickle.dump(hand_det, f)
@@ -304,6 +415,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Overwrite existing converted episodes",
     )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=None,
+        help="Uniform scale of source video (e.g. 0.5 → half resolution). "
+             "Mutually exclusive with --height. Default: keep native, symlink.",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=None,
+        help="Target video height in pixels (width follows aspect, even). "
+             "Mutually exclusive with --scale. Also sets Phantom input_resolution.",
+    )
     return parser.parse_args()
 
 
@@ -338,8 +463,40 @@ def main() -> None:
     output_base = args.output_root / demo_name
     output_base.mkdir(parents=True, exist_ok=True)
 
+    first_video = task_dir / f"{hdf5_files[0].stem}.mp4"
+    src_w, src_h = probe_video_wh(first_video) if first_video.exists() else (NATIVE_W, NATIVE_H)
+    dst_w, dst_h, sx, sy = resolve_target_wh(src_w, src_h, args.scale, args.height)
+    scale_video = not (abs(sx - 1.0) < 1e-9 and abs(sy - 1.0) < 1e-9)
+
     print(f"Converting {len(hdf5_files)} episodes from {task_dir}")
     print(f"Output: {output_base}")
+    if scale_video:
+        print(f"Video:  {src_w}x{src_h} → {dst_w}x{dst_h}  (sx={sx:.6f}, sy={sy:.6f})")
+        cam_name = f"camera_intrinsics_egodex_{dst_h}p.json"
+        cam_rel = f"camera/{cam_name}"
+        if not CAMERA_JSON_SRC.is_file():
+            print(f"Error: missing source intrinsics {CAMERA_JSON_SRC}")
+            sys.exit(1)
+        write_scaled_camera_json(CAMERA_JSON_SRC, CAMERA_JSON_SRC.parent / cam_name, sx, sy)
+        write_scaled_camera_json(CAMERA_JSON_SRC, output_base / "camera_intrinsics.json", sx, sy)
+        meta = {
+            "scale_x": sx,
+            "scale_y": sy,
+            "src_wh": [src_w, src_h],
+            "dst_wh": [dst_w, dst_h],
+            "input_resolution": dst_h,
+            "output_resolution": dst_h,
+            "camera_intrinsics": cam_rel,
+        }
+        with open(output_base / "convert_meta.json", "w") as f:
+            json.dump(meta, f, indent=2)
+            f.write("\n")
+        print(f"Intrinsics: {CAMERA_JSON_SRC.parent / cam_name}")
+    else:
+        print(f"Video:  {src_w}x{src_h} (native, symlink)")
+        meta_path = output_base / "convert_meta.json"
+        if meta_path.exists():
+            meta_path.unlink()
 
     converted = 0
     for idx, hdf5_path in enumerate(hdf5_files):
@@ -360,7 +517,16 @@ def main() -> None:
             continue
 
         try:
-            convert_one_episode(hdf5_path, video_path, output_dir)
+            convert_one_episode(
+                hdf5_path,
+                video_path,
+                output_dir,
+                img_w=dst_w,
+                img_h=dst_h,
+                sx=sx,
+                sy=sy,
+                scale_video=scale_video,
+            )
             converted += 1
 
             # Print brief info
@@ -377,6 +543,11 @@ def main() -> None:
 
     print(f"\nConverted {converted}/{len(hdf5_files)} episodes")
     print(f"\nNext steps (from phantom/):")
+    if scale_video:
+        print(f"  Hydra overrides (also written to {output_base / 'convert_meta.json'}):")
+        print(f"    input_resolution={dst_h} output_resolution={dst_h} \\")
+        print(f"    camera_intrinsics=camera/camera_intrinsics_egodex_{dst_h}p.json")
+        print(f"  run_hand_inpaint.sh / run_contact_retarget.sh pick these up automatically.")
     print(f"  python process_data.py \\")
     print(f"    --config-path=../b/configs --config-name=egodex \\")
     print(f"    demo_name={demo_name} mode=all")

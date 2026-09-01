@@ -69,6 +69,42 @@ def transform_points(T: np.ndarray, pts: np.ndarray) -> np.ndarray:
     return np.einsum("nij,nkj->nki", T[:, :3, :3], pts) + T[:, None, :3, 3]
 
 
+def probe_video_wh(path: Path) -> Tuple[int, int] | None:
+    if not path.is_file() and not path.is_symlink():
+        return None
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(path))
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return None
+
+
+def scale_K_to_video(K: np.ndarray, video_wh: Tuple[int, int] | None) -> np.ndarray:
+    """Scale HDF5 K (native EgoDex pixels) to match converted video_L.mp4."""
+    if video_wh is None:
+        return K
+    native_w = float(2.0 * K[0, 2]) if K[0, 2] > 1.0 else 1920.0
+    native_h = float(2.0 * K[1, 2]) if K[1, 2] > 1.0 else 1080.0
+    sx = video_wh[0] / native_w
+    sy = video_wh[1] / native_h
+    if abs(sx - 1.0) < 1e-6 and abs(sy - 1.0) < 1e-6:
+        return K
+    Ks = K.copy()
+    Ks[0, 0] *= sx
+    Ks[1, 1] *= sy
+    Ks[0, 2] *= sx
+    Ks[1, 2] *= sy
+    print(f"scaled K to video {video_wh[0]}x{video_wh[1]}  sx={sx:.6f} sy={sy:.6f}")
+    return Ks
+
+
 def project(pts_cam: np.ndarray, K: np.ndarray) -> np.ndarray:
     uvw = pts_cam @ K.T
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -99,6 +135,7 @@ def main() -> None:
     hand_dir.mkdir(parents=True, exist_ok=True)
 
     K, T_c2w, gt_world, gt_valid = load_hdf5(hdf5_path, args.gt_conf_thresh)
+    K = scale_K_to_video(K, probe_video_wh(demo_dir / "video_L.mp4"))
     if args.camera_convention == "opengl":
         T_c2w = T_c2w @ GL_TO_CV[None]
     T_w2c = np.linalg.inv(T_c2w)

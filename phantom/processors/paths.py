@@ -79,11 +79,26 @@ class Paths:
         self.intent = self.intent_processor / "intent.npz"
         self.intent_preview = self.intent_processor / "intent_preview.png"
         self.track_quality = self.intent_processor / "track_quality.npz"
+        for side in ("left", "right"):
+            setattr(self, f"object_masks_{side}", self.intent_processor / f"object_masks_{side}.npy")
+            setattr(self, f"object_pcd_{side}", self.intent_processor / f"object_pcd_{side}.npz")
+            setattr(self, f"video_object_mask_{side}", self.intent_processor / f"video_object_mask_{side}.mp4")
+            setattr(self, f"object_pcd_preview_{side}", self.intent_processor / f"object_pcd_preview_{side}.png")
+            setattr(self, f"contact_events_{side}", self.intent_processor / f"contact_events_{side}.npz")
+            setattr(self, f"contact_diagnostic_{side}", self.intent_processor / f"contact_diagnostic_{side}.png")
+            setattr(self, f"grasp_{side}", self.intent_processor / f"grasp_{side}.npz")
+            setattr(self, f"grasp_preview_{side}", self.intent_processor / f"grasp_preview_{side}.png")
+            setattr(self, f"intent_{side}", self.intent_processor / f"intent_{side}.npz")
+            setattr(self, f"intent_preview_{side}", self.intent_processor / f"intent_preview_{side}.png")
+            setattr(self, f"track_quality_{side}", self.intent_processor / f"track_quality_{side}.npz")
 
         # Stage B (whole-trajectory optimization) output.
         self.stageb_processor = self.data_path / "stageb_processor"
         self.joint_trajectory = self.stageb_processor / "q_trajectory.npz"
         self.stageb_diagnostic = self.stageb_processor / "stageb_diagnostic.png"
+        for side in ("left", "right"):
+            setattr(self, f"joint_trajectory_{side}", self.stageb_processor / f"q_trajectory_{side}.npz")
+            setattr(self, f"stageb_diagnostic_{side}", self.stageb_processor / f"stageb_diagnostic_{side}.png")
 
         # Stage C (retarget render + label + trajectory-level pruning) output.
         self.retarget_processor = self.data_path / "retarget_processor"
@@ -127,7 +142,44 @@ class Paths:
             key=lambda x: int(x.stem)
         )
         self.original_images_reverse = image_paths
-    
+
+    def for_hand(self, side: Optional[str]) -> "Paths":
+        """Copy whose generic intent/stageb aliases point at ``_{side}`` files.
+
+        Unsuffixed paths stay as the primary/compat aliases on the original.
+        """
+        if side not in ("left", "right"):
+            return self
+        p = Paths(data_path=self.data_path, robot_name=self.robot_name)
+        p.object_masks = getattr(p, f"object_masks_{side}")
+        p.object_pcd = getattr(p, f"object_pcd_{side}")
+        p.video_object_mask = getattr(p, f"video_object_mask_{side}")
+        p.object_pcd_preview = getattr(p, f"object_pcd_preview_{side}")
+        p.contact_events = getattr(p, f"contact_events_{side}")
+        p.contact_diagnostic = getattr(p, f"contact_diagnostic_{side}")
+        p.grasp = getattr(p, f"grasp_{side}")
+        p.grasp_preview = getattr(p, f"grasp_preview_{side}")
+        p.intent = getattr(p, f"intent_{side}")
+        p.intent_preview = getattr(p, f"intent_preview_{side}")
+        p.track_quality = getattr(p, f"track_quality_{side}")
+        p.joint_trajectory = getattr(p, f"joint_trajectory_{side}")
+        p.stageb_diagnostic = getattr(p, f"stageb_diagnostic_{side}")
+        return p
+
+    def intent_npz(self, side: Optional[str] = None) -> Path:
+        if side in ("left", "right"):
+            cand = getattr(self, f"intent_{side}")
+            if cand.exists() or not self.intent.exists():
+                return cand
+        return self.intent
+
+    def joint_traj_npz(self, side: Optional[str] = None) -> Path:
+        if side in ("left", "right"):
+            cand = getattr(self, f"joint_trajectory_{side}")
+            if cand.exists() or not self.joint_trajectory.exists():
+                return cand
+        return self.joint_trajectory
+
     def ensure_directories_exist(self):
         """
         Create necessary directories if they don't exist.

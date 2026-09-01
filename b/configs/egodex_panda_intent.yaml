@@ -114,7 +114,22 @@ stageb_dq_max: 0.3
 stageb_max_nfev: 2000            # 200 hits the cap on T=160 (success=False, ~13s)
 
 retarget_use_depth: false
+contact_bimanual: true
+contact_bimanual_setup: shoulders_ego
 retarget_key_pos_thresh: 0.03
 retarget_vel_thresh: 0.5
 retarget_jerk_thresh: 0.05
 retarget_frame_pos_thresh: 0.05
+
+# Hand inpainting (ProPainter in a separate conda; not mixed into phantom)
+inpaint_backend: propainter
+propainter_root: "/home/a26160/SRC/ProPainter"
+propainter_python: ""
+propainter_fp16: true
+propainter_subvideo_length: 80
+propainter_neighbor_length: 10
+propainter_ref_stride: 10
+inpaint_resolution: 480
+mask_dilate_kernel: "MORPH_ELLIPSE"
+mask_dilate_size: 11
+mask_dilate_iterations: 3

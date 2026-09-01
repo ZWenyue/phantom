@@ -56,6 +56,27 @@ class BaseProcessor:
         if self.bimanual_setup != "single_arm":
             self.target_hand = "both"
 
+    def contact_bimanual(self) -> bool:
+        """True when contact-grounded retarget should solve/render both arms."""
+        th = str(getattr(self, "target_hand", "") or "").lower()
+        if th in ("both", "bimanual"):
+            return True
+        return bool(getattr(self.cfg, "contact_bimanual", False))
+
+    def intent_sides(self) -> list:
+        """Hands to run through intent/stageb. Right first so T_place prefers it."""
+        if self.contact_bimanual():
+            return ["right", "left"]
+        side = str(getattr(self, "target_hand", "right") or "right").lower()
+        return [side if side in ("left", "right") else "right"]
+
+    def contact_bimanual_layout(self) -> str:
+        """PhantomBimanual ``bimanual_setup`` used for FK/render (default shoulders)."""
+        layout = str(getattr(self.cfg, "contact_bimanual_setup", "shoulders") or "shoulders")
+        if layout == "single_arm":
+            return "shoulders"
+        return layout
+
     def _validate_config(self, cfg: DictConfig) -> None:
         """Validate critical configuration parameters."""
         if cfg.input_resolution <= 0 or cfg.output_resolution <= 0:
@@ -113,12 +134,15 @@ class BaseProcessor:
 
     def _get_camera_extrinsics_path(self) -> str:
         """Get the appropriate camera extrinsics path based on bimanual setup."""
-        if self.bimanual_setup == "shoulders":
+        if self.bimanual_setup in ("shoulders", "shoulders_ego"):
             return "camera/camera_extrinsics_ego_bimanual_shoulders.json"
         elif self.bimanual_setup == "single_arm":
             return "camera/camera_extrinsics.json"
         else:
-            raise ValueError(f"Invalid bimanual setup: {self.bimanual_setup}. Must be 'single_arm' or 'shoulders'.")
+            raise ValueError(
+                f"Invalid bimanual setup: {self.bimanual_setup}. "
+                "Must be 'single_arm', 'shoulders', or 'shoulders_ego'."
+            )
     
     def get_paths(self, data_path: str) -> Paths:
         """

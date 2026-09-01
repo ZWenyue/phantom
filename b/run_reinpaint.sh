@@ -91,6 +91,14 @@ DATA_ARGS="data_root_dir=${DATA_ROOT} processed_data_root_dir=${PROCESSED_ROOT}"
 eval "$(conda shell.bash hook 2>/dev/null)"
 conda activate phantom
 
+# torch's pip wheel pulls in the system libstdc++, which is older than what the
+# env's icu/sqlite need (CXXABI_1.3.15). Whichever loads first wins the soname,
+# so force the conda copy. Preloading one lib (not the whole lib dir) keeps the
+# propainter subprocess on its own libraries.
+if [[ -f "${CONDA_PREFIX}/lib/libstdc++.so.6" ]]; then
+    export LD_PRELOAD="${CONDA_PREFIX}/lib/libstdc++.so.6${LD_PRELOAD:+:${LD_PRELOAD}}"
+fi
+
 STEPS=(arm_segmentation hand_inpaint)
 if ! $HAND_ONLY; then
     STEPS+=(robot_inpaint)

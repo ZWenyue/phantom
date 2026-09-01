@@ -62,6 +62,13 @@ eval "$(conda shell.bash hook 2>/dev/null)"
 conda activate phantom
 export PYTHONUNBUFFERED=1
 
+# torch's pip wheel pulls in the system libstdc++, which is older than what the
+# env's icu/sqlite need (CXXABI_1.3.15). Whichever loads first wins the soname,
+# so force the conda copy.
+if [[ -f "${CONDA_PREFIX}/lib/libstdc++.so.6" ]]; then
+    export LD_PRELOAD="${CONDA_PREFIX}/lib/libstdc++.so.6${LD_PRELOAD:+:${LD_PRELOAD}}"
+fi
+
 # MuJoCo/robosuite headless EGL rendering (required for robot_inpaint)
 export LD_LIBRARY_PATH="/usr/local/nvidia/lib64:${LD_LIBRARY_PATH:-}"
 export __EGL_VENDOR_LIBRARY_DIRS="${HOME}/.local/share/glvnd/egl_vendor.d"

@@ -30,6 +30,75 @@ from phantom.traj_opt import TrajectoryOptimizer, TrajOptConfig, ArmKinematics
 
 logger = logging.getLogger(__name__)
 
+ROBOT_IDX = {"right": 0, "left": 1}
+
+
+def bimanual_torso_RT(env) -> tuple:
+    """Shared workspace origin for contact-grounded bimanual (torso, not robot0).
+
+    Intent ``p_target`` / ``T_cam2robot`` live in this frame. Mapping camera and
+    both arms through robot0 would make translating the shoulders a no-op for
+    ego occlusion (camera rides with the right base).
+    """
+    inner = env.env if hasattr(env, "env") else env
+    z = float(inner.robot_base_height) + float(inner.robot_base_offset)
+    return np.eye(3, dtype=np.float64), np.array([0.0, 0.0, z], dtype=np.float64)
+
+
+class WorkspaceFrame:
+    """Duck-types MujocoPandaArm.world_pos / world_R for a virtual torso."""
+
+    def __init__(self, base_R: np.ndarray, base_t: np.ndarray):
+        self.base_R = np.asarray(base_R, dtype=float).reshape(3, 3)
+        self.base_t = np.asarray(base_t, dtype=float).reshape(3)
+
+    def world_pos(self, p_robot: np.ndarray) -> np.ndarray:
+        return (self.base_R @ np.asarray(p_robot).T).T + self.base_t
+
+    def world_R(self, R_robot: np.ndarray) -> np.ndarray:
+        return self.base_R @ R_robot
+
+
+def _make_bimanual_env(bimanual_setup: str = "shoulders"):
+    """Headless ``PhantomBimanual`` env so each arm's FK uses its real shoulder base.
+
+    Must match Stage C ``TwinBimanualRobot`` (same env_name + layout) so
+    rendered pixels are FK(q) in the same world as the optimizer.
+    """
+    from robosuite.controllers import load_controller_config
+    from robomimic.envs.env_robosuite import EnvRobosuite
+    import robomimic.utils.obs_utils as ObsUtils
+
+    ObsUtils.initialize_obs_utils_with_obs_specs(
+        obs_modality_specs=dict(obs=dict(low_dim=["robot0_eef_pos"], rgb=["frontview_image"]))
+    )
+    controller_config = load_controller_config(default_controller="OSC_POSE")
+    controller_config["control_delta"] = False
+    controller_config["uncouple_pos_ori"] = False
+    options = dict(
+        env_name="PhantomBimanual",
+        robots=["Panda", "Panda"],
+        gripper_types=["Robotiq85Gripper", "Robotiq85Gripper"],
+        bimanual_setup=bimanual_setup,
+        controller_configs=controller_config,
+        camera_heights=240,
+        camera_widths=240,
+        camera_segmentations="instance",
+        direct_gripper_control=True,
+        use_depth_obs=False,
+        camera_pos=np.array([0, 0, 1.5]),
+        camera_quat_wxyz=np.array([1, 0, 0, 0]),
+        camera_sensorsize=np.array([6.0, 6.0]),
+        camera_principalpixel=np.array([0.0, 0.0]),
+        camera_focalpixel=np.array([400.0, 400.0]),
+    )
+    env = EnvRobosuite(
+        **options, render=False, render_offscreen=False, use_image_obs=False,
+        camera_names=["frontview"], control_freq=20,
+    )
+    env.reset()
+    return env
+
 
 def _make_single_arm_env():
     """Headless robosuite single-arm ``Phantom`` env for FK/Jacobian (no rendering).
@@ -144,8 +213,7 @@ class StageBProcessor(BaseProcessor):
     def __init__(self, args):
         super().__init__(args)
         self.arm_side = str(getattr(self.cfg, "target_hand", "left"))
-        # Single-arm "Phantom" render env has one robot (robot0) regardless of side.
-        self.robot_idx = 0
+        self.robot_idx = ROBOT_IDX.get(self.arm_side, 0) if self.contact_bimanual() else 0
         self.warm_start = bool(getattr(self.cfg, "stageb_warm_start", True))
         self.grip_rot_offset_deg = float(getattr(self.cfg, "stageb_grip_rot_offset_deg", 90.0))
         # Orientation is in radians, position in meters; this scale rebalances the
@@ -165,51 +233,100 @@ class StageBProcessor(BaseProcessor):
     # ------------------------------------------------------------------
     def _get_env(self):
         if self._env is None:
-            logger.info("[stageb] building headless single-arm Panda env for FK/Jacobian")
-            self._env = _make_single_arm_env()
+            if self.contact_bimanual():
+                layout = self.contact_bimanual_layout()
+                logger.info("[stageb] building headless PhantomBimanual env layout=%s", layout)
+                self._env = _make_bimanual_env(layout)
+            else:
+                logger.info("[stageb] building headless single-arm Panda env for FK/Jacobian")
+                self._env = _make_single_arm_env()
         return self._env
 
     def process_one_demo(self, data_sub_folder: str) -> None:
         save_folder = self.get_save_folder(data_sub_folder)
         paths = self.get_paths(save_folder)
+        sides = self.intent_sides()
+        env = self._get_env()
+        if self.contact_bimanual():
+            R_torso, t_torso = bimanual_torso_RT(env)
+            kin_ref = WorkspaceFrame(R_torso, t_torso)
+            logger.info("[stageb] workspace origin = torso t=%s (not robot0)",
+                        np.round(t_torso, 3).tolist())
+        else:
+            # Single-arm: intent robot-frame == that env's only base.
+            kin_ref = MujocoPandaArm(env, 0)
 
-        if not os.path.exists(paths.intent):
-            logger.warning("[stageb] no intent.npz at %s; run mode=intent first. Skipping.",
-                           paths.intent)
-            return
+        solved = 0
+        for side in sides:
+            hp = paths.for_hand(side) if self.contact_bimanual() else paths
+            intent_path = hp.intent
+            if not os.path.exists(intent_path):
+                if os.path.exists(paths.intent) and len(sides) == 1:
+                    intent_path = paths.intent
+                else:
+                    logger.warning("[stageb] no intent at %s; skip side=%s", intent_path, side)
+                    continue
+            self.arm_side = side
+            self.robot_idx = ROBOT_IDX.get(side, 0) if self.contact_bimanual() else 0
+            if self._solve_one_arm(hp, intent_path, env, kin_ref, data_sub_folder):
+                solved += 1
+        if self.contact_bimanual() and os.path.exists(paths.joint_trajectory_right):
+            import shutil
+            shutil.copy2(paths.joint_trajectory_right, paths.joint_trajectory)
+        if solved == 0:
+            logger.warning("[stageb] demo %s: no arm solved", data_sub_folder)
 
-        intent = np.load(paths.intent, allow_pickle=True)
-        p_robot = np.asarray(intent["p_target"], dtype=float)     # (T,3) robot frame
-        R_robot = np.asarray(intent["R_target"], dtype=float)     # (T,3,3) robot frame
+    def _solve_one_arm(self, paths: Paths, intent_path: str, env, kin_ref, data_sub_folder: str) -> bool:
+        intent = np.load(intent_path, allow_pickle=True)
+        p_robot = np.asarray(intent["p_target"], dtype=float)
+        R_robot = np.asarray(intent["R_target"], dtype=float)
         p_valid = np.asarray(intent["p_valid"], dtype=bool)
         w_p = np.asarray(intent["w_p"], dtype=float)
-        w_r = np.asarray(intent["w_r"], dtype=float) * self.ori_scale  # rad/m unit rebalance
+        w_r = np.asarray(intent["w_r"], dtype=float) * self.ori_scale
         phase = np.asarray(intent["phase"])
         gripper_width = np.asarray(intent["gripper_width"], dtype=float)
         n = len(p_robot)
-        logger.info("[stageb] demo=%s T=%d arm=%s", data_sub_folder, n, self.arm_side)
+        grasp_valid = bool(np.asarray(intent["grasp_valid"]).reshape(-1)[0]) if "grasp_valid" in intent.files else True
+        logger.info("[stageb] demo=%s T=%d arm=%s robot_idx=%d grasp_valid=%s",
+                    data_sub_folder, n, self.arm_side, self.robot_idx, grasp_valid)
 
-        env = self._get_env()
         kin = MujocoPandaArm(env, self.robot_idx)
+        p_world, R_world = self._targets_to_world(kin_ref, p_robot, R_robot)
 
-        # Robot-frame intent targets -> world frame using the env's actual base pose
-        # (single-arm "Phantom": translation-only). Apply the pipeline gripper
-        # convention offset (Rz) to the orientation.
-        p_world, R_world = self._targets_to_world(kin, p_robot, R_robot)
+        if self.contact_bimanual() and not grasp_valid:
+            q = np.tile(kin.q_neutral, (n, 1))
+            ee_pos, ee_R = [], []
+            for t in range(n):
+                pos, R = kin.fk(q[t])
+                ee_pos.append(pos)
+                ee_R.append(R)
+            result = dict(
+                q=q,
+                pos_err=np.zeros(n),
+                ori_err=np.zeros(n),
+                ee_pos_world=np.stack(ee_pos, axis=0),
+                ee_R_world=np.stack(ee_R, axis=0),
+                cost_initial=0.0,
+                cost_final=0.0,
+                jerk_rms=0.0,
+                nfev=0,
+                success=True,
+            )
+            self._save_results(paths, result, intent, kin, phase, gripper_width, parked=True)
+            self._save_diagnostic(paths, result, phase)
+            logger.info("[stageb] parked idle arm=%s at init_qpos", self.arm_side)
+            return True
 
-        # Warm start: cheap per-frame position-only DLS (temporally seeded) using the
-        # same MuJoCo Jacobian; gives the optimizer a feasible neighborhood.
         q_init = self._warm_start(kin, p_world, n)
-
         optimizer = TrajectoryOptimizer(kin, self.opt_cfg)
         result = optimizer.optimize(p_world, R_world, w_p, w_r, p_valid=p_valid, q_init=q_init)
-
-        self._save_results(paths, result, intent, kin, phase, gripper_width)
+        self._save_results(paths, result, intent, kin, phase, gripper_width, parked=False)
         self._save_diagnostic(paths, result, phase)
-        logger.info("[stageb] done demo=%s -> %s", data_sub_folder, paths.joint_trajectory)
+        logger.info("[stageb] done demo=%s arm=%s -> %s", data_sub_folder, self.arm_side, paths.joint_trajectory)
+        return True
 
     # ------------------------------------------------------------------
-    def _targets_to_world(self, kin: "MujocoPandaArm", p_robot: np.ndarray, R_robot: np.ndarray):
+    def _targets_to_world(self, kin, p_robot: np.ndarray, R_robot: np.ndarray):
         n = len(p_robot)
         R_off = Rotation.from_euler("Z", self.grip_rot_offset_deg, degrees=True).as_matrix()
         p_world = kin.world_pos(p_robot)
@@ -238,9 +355,10 @@ class StageBProcessor(BaseProcessor):
         return q_init
 
     # ------------------------------------------------------------------
-    def _save_results(self, paths: Paths, result: dict, intent, kin, phase, gripper_width) -> None:
+    def _save_results(self, paths: Paths, result: dict, intent, kin, phase, gripper_width,
+                      parked: bool = False) -> None:
         os.makedirs(paths.stageb_processor, exist_ok=True)
-        # World EE pose -> robot frame (for Stage C labels consistent with intent frame).
+        # World EE pose -> this arm's base frame (Stage C labels = FK in that frame).
         ee_pos_world = np.asarray(result["ee_pos_world"], dtype=float)
         ee_R_world = np.asarray(result["ee_R_world"], dtype=float)
         ee_pos_robot = kin.robot_pos(ee_pos_world)
@@ -260,6 +378,7 @@ class StageBProcessor(BaseProcessor):
             valid=np.ones(len(result["q"]), dtype=bool),
             arm_side=self.arm_side,
             robot_idx=np.int64(self.robot_idx),
+            parked=bool(parked),
             joint_limits=PANDA_JOINT_LIMITS,
             cost_initial=result["cost_initial"],
             cost_final=result["cost_final"],

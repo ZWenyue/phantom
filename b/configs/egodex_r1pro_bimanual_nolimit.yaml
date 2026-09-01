@@ -35,6 +35,13 @@ camera_intrinsics: "camera/camera_intrinsics_egodex.json"
 camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
 
 # Hand inpainting settings
+inpaint_backend: propainter
+propainter_root: "/home/a26160/SRC/ProPainter"
+propainter_python: ""
+propainter_fp16: true
+propainter_subvideo_length: 80
+propainter_neighbor_length: 10
+propainter_ref_stride: 10
 inpaint_resolution: 480
 
 # Mask dilation

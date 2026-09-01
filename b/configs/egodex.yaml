@@ -29,9 +29,15 @@ render: false
 camera_intrinsics: "camera/camera_intrinsics_egodex.json"
 camera_extrinsics: "camera/camera_extrinsics_ego_bimanual_shoulders.json"
 
-# Hand inpainting settings
-# E2FGVI works best at low resolution (~240-480p). inpaint_resolution downscales
-# before inpainting and upscales the result back. 0 = use frame size as-is.
+# Hand inpainting (ProPainter CLI in a separate conda env; e2fgvi is rollback)
+inpaint_backend: propainter
+propainter_root: "/home/a26160/SRC/ProPainter"
+propainter_python: ""   # required for propainter; or set env PROPAINTER_PYTHON
+propainter_fp16: true
+propainter_subvideo_length: 80
+propainter_neighbor_length: 10
+propainter_ref_stride: 10
+# Downscale before inpaint to save GPU memory. 0 = native frame size.
 inpaint_resolution: 480
 
 # Mask dilation (larger = more aggressive hand removal)
