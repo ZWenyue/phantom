@@ -127,6 +127,7 @@ def _has_grasp_and_release(demo_dir: Path) -> bool:
 def discover_episodes(
     src: Path,
     require_grasp_release: bool = False,
+    max_demos: int | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Return (accepted episodes, skip records)."""
     episodes: list[dict] = []
@@ -135,6 +136,10 @@ def discover_episodes(
         (d for d in src.iterdir() if d.is_dir() and d.name.isdigit()),
         key=lambda p: int(p.name),
     )
+    if max_demos is not None:
+        if max_demos <= 0:
+            raise SystemExit("--max-demos must be a positive integer")
+        demo_dirs = demo_dirs[:max_demos]
     if not demo_dirs:
         raise SystemExit(f"no integer demo dirs under {src}")
 
@@ -271,6 +276,12 @@ def main() -> None:
         action="store_true",
         help="list accepted/skipped demos and exit without writing --dst",
     )
+    parser.add_argument(
+        "--max-demos",
+        type=int,
+        default=None,
+        help="Consider at most N demo dirs (numeric id order) before accept filter",
+    )
     args = parser.parse_args()
 
     src = args.src.expanduser().resolve()
@@ -278,7 +289,11 @@ def main() -> None:
     if not src.is_dir():
         raise SystemExit(f"src is not a directory: {src}")
 
-    episodes, skipped = discover_episodes(src, require_grasp_release=args.require_grasp_release)
+    episodes, skipped = discover_episodes(
+        src,
+        require_grasp_release=args.require_grasp_release,
+        max_demos=args.max_demos,
+    )
     print(f"discovered {len(episodes)} accepted demo(s), skipped {len(skipped)} under {src}")
     for rec in skipped:
         print(f"  skip demo {rec['demo']}: {rec['reason']}")

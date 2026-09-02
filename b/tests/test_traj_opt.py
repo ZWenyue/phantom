@@ -157,10 +157,42 @@ def test_smoothness_denoises():
           f"pos_err mean={out['pos_err'].mean():.4f}")
 
 
+def test_per_joint_regularizer():
+    """A per-joint w_reg must match the scalar form when uniform, and must pull
+    only the weighted joint when it is not.
+
+    Stage B uses this to bias one redundant joint (the Panda upper-arm roll)
+    without touching the joints that carry EE tracking.
+    """
+    kin = GantryZArm()
+    n = 12
+    p_target = np.tile([0.5, 0.2, 0.3], (n, 1)).astype(float)
+    R_target = _rz_targets(np.zeros(n))
+    w_p = np.ones(n); w_r = np.zeros(n)
+
+    def solve(w_reg):
+        opt = TrajectoryOptimizer(kin, TrajOptConfig(w_smooth=0.0, w_reg=w_reg))
+        return opt.optimize(p_target, R_target, w_p, w_r)["q"]
+
+    q_scalar = solve(0.01)
+    q_vector = solve([0.01] * kin.n_dof)
+    assert np.allclose(q_scalar, q_vector, atol=1e-6), "uniform vector w_reg diverged from scalar"
+
+    # Weighting joint 0 alone trades its tracking for the neutral posture. With
+    # w_p=1 and q_neutral=0 the stationary point is q0 = 0.5 / (1 + w_reg0^2).
+    q_biased = solve([1.0] + [1e-4] * (kin.n_dof - 1))
+    assert abs(q_biased[:, 0].mean() - 0.25) < 1e-3, q_biased[:, 0].mean()
+    assert abs(q_biased[:, 1].mean() - 0.2) < 1e-3, q_biased[:, 1].mean()
+    assert abs(q_biased[:, 2].mean() - 0.3) < 1e-3, q_biased[:, 2].mean()
+    print(f"[reg] scalar==vector ok; weighted joint0 pulled {q_scalar[:, 0].mean():.4f}"
+          f"->{q_biased[:, 0].mean():.4f} while joint1/2 tracking held")
+
+
 if __name__ == "__main__":
     test_position_tracking()
     test_orientation_tracking()
     test_parallel_jaw_spin_is_free()
     test_parallel_jaw_180_flip_is_equivalent()
     test_smoothness_denoises()
+    test_per_joint_regularizer()
     print("OK: traj_opt smoke tests passed")

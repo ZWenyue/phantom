@@ -23,7 +23,7 @@ real Panda FK/Jacobian provider lives in ``processors/stageb_processor.py``.
 
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -61,7 +61,10 @@ class ArmKinematics:
 @dataclass
 class TrajOptConfig:
     w_smooth: float = 1.0        # 2nd-order smoothness weight (replaces GP/SLERP)
-    w_reg: float = 0.01          # posture regularizer weight (toward q_neutral)
+    # Posture regularizer weight (toward q_neutral). A scalar weights every joint
+    # equally; an (n_dof,) sequence lets a single redundant joint (e.g. the Panda
+    # upper-arm roll that swivels the elbow) be pulled harder than the rest.
+    w_reg: Union[float, Sequence[float]] = 0.01
     w_vel: float = 0.0           # soft velocity-limit penalty weight (0 disables)
     dq_max: float = 0.3          # per-joint velocity cap (rad/frame) for the soft penalty
     max_nfev: int = 200          # max least_squares function evaluations
@@ -136,7 +139,10 @@ class TrajectoryOptimizer:
                          self.kin.q_min, self.kin.q_max)
 
         cfg = self.cfg
-        ws, wreg = float(cfg.w_smooth), float(cfg.w_reg)
+        ws = float(cfg.w_smooth)
+        wreg = np.broadcast_to(
+            np.asarray(cfg.w_reg, dtype=float).reshape(-1), (m,)
+        ).astype(float)
         wvel = float(cfg.w_vel)
         q_neutral = self.kin.q_neutral
 
@@ -206,7 +212,7 @@ class TrajectoryOptimizer:
             for t in range(n):
                 r0 = off_reg + t * m
                 for jj in range(m):
-                    J[r0 + jj, t * m + jj] = wreg
+                    J[r0 + jj, t * m + jj] = wreg[jj]
             # velocity soft penalty (subgradient where active)
             if n_vel:
                 dq = Q[1:] - Q[:-1]

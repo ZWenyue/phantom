@@ -63,6 +63,10 @@ class BaseProcessor:
             return True
         return bool(getattr(self.cfg, "contact_bimanual", False))
 
+    def process_both_hands(self) -> bool:
+        """True when visual hand stages must process and remove both hands."""
+        return bool(getattr(self.cfg, "inpaint_both_hands", False)) or self.contact_bimanual()
+
     def intent_sides(self) -> list:
         """Hands to run through intent/stageb. Right first so T_place prefers it."""
         if self.contact_bimanual():

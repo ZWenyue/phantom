@@ -13,6 +13,7 @@ set -euo pipefail
 #   bash b/run_hand_inpaint.sh --task stack
 #   bash b/run_hand_inpaint.sh --tasks stack,vertical_pick_place --gpu 0-5 --per-gpu 6
 #   bash b/run_hand_inpaint.sh --task stack --demo-num 0
+#   bash b/run_hand_inpaint.sh --all-demos --max-demos 300
 #   bash b/run_hand_inpaint.sh --inpaint-only
 #   bash b/run_hand_inpaint.sh --seg-only
 # =============================================================================
@@ -41,6 +42,7 @@ GPU_SPEC="${CUDA_VISIBLE_DEVICES:-0-7}"
 GPU_SPEC_SET=true
 JOBS=""
 PER_GPU=""
+MAX_DEMOS=""
 GPUS=()
 NWORKERS=1
 PROPAINTER_PYTHON="${PROPAINTER_PYTHON:-}"
@@ -89,6 +91,7 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2 ;;
         --all-demos)       ALL_DEMOS=true; DEMO_NUM=""; shift ;;
+        --max-demos)       MAX_DEMOS="$2";       shift 2 ;;
         --data-root)       DATA_ROOT="$2";       shift 2 ;;
         --processed-root)  PROCESSED_ROOT="$2";  shift 2 ;;
         --skip)            SKIP_EXISTING="true"; shift   ;;
@@ -99,7 +102,7 @@ while [[ $# -gt 0 ]]; do
         --propainter-root)   PROPAINTER_ROOT="$2";   shift 2 ;;
         --dry-run)         DRY_RUN=true;         shift   ;;
         -h|--help)
-            sed -n '3,16p' "$0"; exit 0 ;;
+            sed -n '3,17p' "$0"; exit 0 ;;
         *)
             echo "Unknown option: $1" >&2
             exit 1 ;;
@@ -111,6 +114,11 @@ PHANTOM_DIR="${SCRIPT_DIR}/../phantom"
 
 if [[ ${#TASKS[@]} -eq 0 ]]; then
     TASKS=("${DEFAULT_TASKS[@]}")
+fi
+
+if [[ -n "${MAX_DEMOS}" && ! "${MAX_DEMOS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--max-demos must be a positive integer" >&2
+    exit 1
 fi
 
 has_step() {
@@ -252,6 +260,7 @@ list_demos() {
         return 0
     fi
     local d base
+    local -a demos=()
     shopt -s nullglob
     for d in "${dir}"/*/; do
         base="$(basename "${d}")"
@@ -263,8 +272,17 @@ list_demos() {
                 continue
             fi
         fi
-        echo "${base}"
-    done | sort -n
+        demos+=("${base}")
+    done
+    if [[ ${#demos[@]} -eq 0 ]]; then
+        return 0
+    fi
+    local -a sorted=()
+    mapfile -t sorted < <(printf '%s\n' "${demos[@]}" | sort -n)
+    if [[ -n "${MAX_DEMOS}" && ${#sorted[@]} -gt ${MAX_DEMOS} ]]; then
+        sorted=("${sorted[@]:0:${MAX_DEMOS}}")
+    fi
+    printf '%s\n' "${sorted[@]}"
 }
 
 load_convert_resolution_overrides() {

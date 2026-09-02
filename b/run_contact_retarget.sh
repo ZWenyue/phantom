@@ -17,6 +17,7 @@ set -euo pipefail
 #   bash b/run_contact_retarget.sh --demo-num 1 --step stageb,retarget_inpaint
 #   bash b/run_contact_retarget.sh --demo-num 1 --reuse-masks
 #   bash b/run_contact_retarget.sh --demo-num 1 --skip-export
+#   bash b/run_contact_retarget.sh --all-demos --max-demos 300
 #   bash b/run_contact_retarget.sh --dry-run
 # =============================================================================
 
@@ -32,6 +33,7 @@ SKIP_EXISTING="false"
 REUSE_MASKS="false"
 SKIP_EXPORT=false
 MAX_NFEV=""
+MAX_DEMOS=""
 DRY_RUN=false
 GPU_SPEC="${CUDA_VISIBLE_DEVICES:-}"
 GPU_SPEC_SET=false
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2 ;;
         --all-demos)       ALL_DEMOS=true;       shift   ;;
+        --max-demos)       MAX_DEMOS="$2";       shift 2 ;;
         --egodex-root)     EGODEX_ROOT="$2";     shift 2 ;;
         --data-root)       DATA_ROOT="$2";       shift 2 ;;
         --processed-root)  PROCESSED_ROOT="$2";  shift 2 ;;
@@ -66,11 +69,16 @@ while [[ $# -gt 0 ]]; do
         --per-gpu)         PER_GPU="$2";         shift 2 ;;
         --dry-run)         DRY_RUN=true;         shift   ;;
         -h|--help)
-            sed -n '3,21p' "$0"; exit 0 ;;
+            sed -n '3,22p' "$0"; exit 0 ;;
         *)
             echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+if [[ -n "${MAX_DEMOS}" && ! "${MAX_DEMOS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--max-demos must be a positive integer" >&2
+    exit 1
+fi
 
 DEMO_NAME="egodex_${TASK}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -193,7 +201,12 @@ list_demos() {
         echo "no demos with depth.npy under ${dir}" >&2
         exit 1
     fi
-    printf '%s\n' "${demos[@]}" | sort -n
+    local -a sorted=()
+    mapfile -t sorted < <(printf '%s\n' "${demos[@]}" | sort -n)
+    if [[ -n "${MAX_DEMOS}" && ${#sorted[@]} -gt ${MAX_DEMOS} ]]; then
+        sorted=("${sorted[@]:0:${MAX_DEMOS}}")
+    fi
+    printf '%s\n' "${sorted[@]}"
 }
 
 link_if_missing() {

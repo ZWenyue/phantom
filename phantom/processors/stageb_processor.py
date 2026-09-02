@@ -18,6 +18,7 @@ warm start, and result saving + diagnostics.
 
 import logging
 import os
+from dataclasses import replace
 from typing import Optional
 
 import numpy as np
@@ -31,6 +32,10 @@ from phantom.traj_opt import TrajectoryOptimizer, TrajOptConfig, ArmKinematics
 logger = logging.getLogger(__name__)
 
 ROBOT_IDX = {"right": 0, "left": 1}
+
+# Panda upper-arm roll. It swivels the elbow about the shoulder-wrist axis, so it
+# is the redundant DoF that moves the elbow without disturbing the EE pose.
+ELBOW_SWIVEL_JOINT = 2
 
 
 def bimanual_torso_RT(env) -> tuple:
@@ -216,10 +221,19 @@ class StageBProcessor(BaseProcessor):
         self.robot_idx = ROBOT_IDX.get(self.arm_side, 0) if self.contact_bimanual() else 0
         self.warm_start = bool(getattr(self.cfg, "stageb_warm_start", True))
         self.grip_rot_offset_deg = float(getattr(self.cfg, "stageb_grip_rot_offset_deg", 90.0))
+        self.park_idle_arms = bool(getattr(self.cfg, "stageb_park_idle_arms", True))
+        self.idle_hand_span_thresh = float(
+            getattr(self.cfg, "stageb_idle_hand_span_thresh", 0.02)
+        )
+        self.idle_hand_min_frames = int(
+            getattr(self.cfg, "stageb_idle_hand_min_frames", 5)
+        )
         # Orientation is in radians, position in meters; this scale rebalances the
         # two so orientation (subject to the parallel-jaw grasp's rotational slack)
         # does not overpower position at the high-weight grasp/release keyframes.
         self.ori_scale = float(getattr(self.cfg, "stageb_ori_scale", 0.2))
+        self.elbow_swivel_deg = float(getattr(self.cfg, "stageb_elbow_swivel_deg", 0.0))
+        self.w_reg_elbow = float(getattr(self.cfg, "stageb_w_reg_elbow", 0.0))
         self.opt_cfg = TrajOptConfig(
             w_smooth=float(getattr(self.cfg, "stageb_w_smooth", 1.0)),
             w_reg=float(getattr(self.cfg, "stageb_w_reg", 0.01)),
@@ -287,13 +301,20 @@ class StageBProcessor(BaseProcessor):
         gripper_width = np.asarray(intent["gripper_width"], dtype=float)
         n = len(p_robot)
         grasp_valid = bool(np.asarray(intent["grasp_valid"]).reshape(-1)[0]) if "grasp_valid" in intent.files else True
-        logger.info("[stageb] demo=%s T=%d arm=%s robot_idx=%d grasp_valid=%s",
-                    data_sub_folder, n, self.arm_side, self.robot_idx, grasp_valid)
+        hand_span, hand_frames = self._hand_motion_span(intent)
+        park_arm = self._should_park_arm(grasp_valid, hand_span, hand_frames)
+        logger.info(
+            "[stageb] demo=%s T=%d arm=%s robot_idx=%d grasp_valid=%s "
+            "hand_span=%.3fm hand_frames=%d park=%s",
+            data_sub_folder, n, self.arm_side, self.robot_idx, grasp_valid,
+            hand_span, hand_frames, park_arm,
+        )
 
         kin = MujocoPandaArm(env, self.robot_idx)
+        opt_cfg = self._apply_elbow_swivel(kin)
         p_world, R_world = self._targets_to_world(kin_ref, p_robot, R_robot)
 
-        if self.contact_bimanual() and not grasp_valid:
+        if self.contact_bimanual() and park_arm:
             q = np.tile(kin.q_neutral, (n, 1))
             ee_pos, ee_R = [], []
             for t in range(n):
@@ -314,16 +335,71 @@ class StageBProcessor(BaseProcessor):
             )
             self._save_results(paths, result, intent, kin, phase, gripper_width, parked=True)
             self._save_diagnostic(paths, result, phase)
-            logger.info("[stageb] parked idle arm=%s at init_qpos", self.arm_side)
+            logger.info("[stageb] parked idle arm=%s at neutral posture", self.arm_side)
             return True
 
         q_init = self._warm_start(kin, p_world, n)
-        optimizer = TrajectoryOptimizer(kin, self.opt_cfg)
+        optimizer = TrajectoryOptimizer(kin, opt_cfg)
         result = optimizer.optimize(p_world, R_world, w_p, w_r, p_valid=p_valid, q_init=q_init)
         self._save_results(paths, result, intent, kin, phase, gripper_width, parked=False)
         self._save_diagnostic(paths, result, phase)
         logger.info("[stageb] done demo=%s arm=%s -> %s", data_sub_folder, self.arm_side, paths.joint_trajectory)
         return True
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _hand_motion_span(intent) -> tuple:
+        """Return robust 3-D span and frame count for hand-sourced EE targets."""
+        files = set(intent.files) if hasattr(intent, "files") else set(intent.keys())
+        if not {"p_target", "p_valid", "p_source"}.issubset(files):
+            return 0.0, 0
+        points = np.asarray(intent["p_target"], dtype=float)
+        valid = np.asarray(intent["p_valid"], dtype=bool)
+        source = np.asarray(intent["p_source"], dtype=object)
+        hand = valid & (source == "hand") & np.isfinite(points).all(axis=1)
+        points = points[hand]
+        if len(points) < 2:
+            return 0.0, int(len(points))
+        lo, hi = np.percentile(points, [5.0, 95.0], axis=0)
+        return float(np.linalg.norm(hi - lo)), int(len(points))
+
+    def _apply_elbow_swivel(self, kin) -> TrajOptConfig:
+        """Bias the redundant elbow swivel away from the ego camera.
+
+        With `shoulders_ego` the headcam sits between the two bases, so a raised
+        elbow sweeps across the frustum while the gripper is on target. Shifting
+        the neutral posture along the swivel joint (mirrored between the right
+        and left arm) pulls the elbow outward/down through the null space, which
+        leaves the EE pose free. Returns the per-arm optimizer config.
+        """
+        if self.elbow_swivel_deg == 0.0:
+            return self.opt_cfg
+        j = ELBOW_SWIVEL_JOINT
+        sign = -1.0 if self.robot_idx == ROBOT_IDX["right"] else 1.0
+        kin.q_neutral = kin.q_neutral.copy()
+        kin.q_neutral[j] = float(np.clip(
+            kin.q_neutral[j] + sign * np.deg2rad(self.elbow_swivel_deg),
+            kin.q_min[j], kin.q_max[j],
+        ))
+        w_reg = np.full(kin.n_dof, float(self.opt_cfg.w_reg), dtype=float)
+        if self.w_reg_elbow > 0.0:
+            w_reg[j] = self.w_reg_elbow
+        logger.info(
+            "[stageb] elbow swivel arm=%s q_neutral[%d]=%.3f rad w_reg=%.3f",
+            self.arm_side, j, kin.q_neutral[j], w_reg[j],
+        )
+        return replace(self.opt_cfg, w_reg=w_reg)
+
+    def _should_park_arm(
+        self, grasp_valid: bool, hand_span: float, hand_frames: int
+    ) -> bool:
+        """Park only a truly idle no-grasp hand, not every failed grasp."""
+        if not self.park_idle_arms or grasp_valid:
+            return False
+        return (
+            hand_frames < self.idle_hand_min_frames
+            or hand_span < self.idle_hand_span_thresh
+        )
 
     # ------------------------------------------------------------------
     def _targets_to_world(self, kin, p_robot: np.ndarray, R_robot: np.ndarray):

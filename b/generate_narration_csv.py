@@ -52,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--demo", type=int, default=None, help="Export a single episode id")
     parser.add_argument(
+        "--max-demos",
+        type=int,
+        default=None,
+        help="Process at most N demos (numeric id order; default: all)",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing narration.csv files",
@@ -105,6 +111,10 @@ def main() -> None:
         hdf5_files = [task_dir / f"{args.demo}.hdf5"]
         if not hdf5_files[0].is_file():
             raise SystemExit(f"Error: missing {hdf5_files[0]}")
+    elif args.max_demos is not None:
+        if args.max_demos <= 0:
+            raise SystemExit("--max-demos must be a positive integer")
+        hdf5_files = hdf5_files[: args.max_demos]
     if not hdf5_files:
         raise SystemExit(f"Error: no HDF5 files found in {task_dir}")
 

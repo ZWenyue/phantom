@@ -97,6 +97,16 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
         # Depth-aware occlusion: robot pixels cover the background only when they
         # are closer than the (aligned) DA3 metric depth map.
         self.use_depth = bool(getattr(self.cfg, "retarget_use_depth", False))
+        self.distal_only = bool(getattr(self.cfg, "retarget_distal_only", False))
+        distal_bodies = getattr(
+            self.cfg,
+            "retarget_distal_body_tokens",
+            ["link7", "eef", "gripper", "finger", "knuckle"],
+        )
+        self.distal_body_tokens = tuple(str(x).lower() for x in distal_bodies)
+        self._distal_geom_ids_cache: Dict[int, np.ndarray] = {}
+        self._distal_filter_warned = False
+        self._configure_distal_render_geometry()
 
         # Trajectory-level quality gate thresholds (replace per-frame drop).
         self.key_pos_thresh = float(getattr(self.cfg, "retarget_key_pos_thresh", 0.03))
@@ -116,8 +126,36 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
                 RobotInpaintProcessor._initialize_robot(self)
             finally:
                 self.bimanual_setup = saved
+            if hasattr(self, "_distal_geom_ids_cache"):
+                self._distal_geom_ids_cache.clear()
+            self._configure_distal_render_geometry()
             return
         super()._initialize_robot()
+        if hasattr(self, "_distal_geom_ids_cache"):
+            self._distal_geom_ids_cache.clear()
+        self._configure_distal_render_geometry()
+
+    def _configure_distal_render_geometry(self) -> None:
+        """Hide proximal robot geoms so they cannot occlude retained distal links."""
+        if not getattr(self, "distal_only", False) or not hasattr(self, "twin_robot"):
+            return
+        sim = self.twin_robot.env.env.sim
+        hidden = []
+        for geom_id in range(sim.model.ngeom):
+            body_id = int(sim.model.geom_bodyid[geom_id])
+            body_name = sim.model.body_id2name(body_id) or ""
+            body_lower = body_name.lower()
+            is_robot = "robot" in body_lower or "gripper" in body_lower
+            is_distal = any(token in body_lower for token in self.distal_body_tokens)
+            if is_robot and not is_distal:
+                hidden.append(geom_id)
+        if hidden:
+            sim.model.geom_rgba[np.asarray(hidden, dtype=np.int32), 3] = 0.0
+            sim.forward()
+        logger.info(
+            "[retarget] distal-only hid %d proximal robot geoms before rendering",
+            len(hidden),
+        )
 
     # ------------------------------------------------------------------
     def process_one_demo(self, data_sub_folder: str) -> None:
@@ -325,6 +363,9 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
         cam = self.twin_robot.camera_name
         rgb = np.asarray(obs[f"{cam}_image"])                       # (H, W, 3) uint8
         seg = np.asarray(obs[f"{cam}_segmentation_instance"])[..., 0]
+        element_seg = obs.get(f"{cam}_segmentation_element")
+        if element_seg is not None:
+            element_seg = np.asarray(element_seg)[..., 0]
 
         depth = None
         if self.use_depth:
@@ -337,10 +378,12 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
             if nrm > 0:
                 rgb = rgb[:, nrm:W - nrm]
                 seg = seg[:, nrm:W - nrm]
+                if element_seg is not None:
+                    element_seg = element_seg[:, nrm:W - nrm]
                 if depth is not None:
                     depth = depth[:, nrm:W - nrm]
 
-        robot_mask = (seg > 0).astype(np.uint8)
+        robot_mask = self._robot_render_mask(seg, element_seg, sim)
         results: Dict[str, np.ndarray] = {
             "rgb_img": rgb.astype(np.float32) / 255.0,
             "robot_mask": robot_mask,
@@ -357,6 +400,9 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
             cam = getattr(getattr(self.twin_robot, "camera_params", None), "name", cam)
         rgb = np.asarray(obs[f"{cam}_image"])
         seg = np.asarray(obs[f"{cam}_segmentation_instance"])[..., 0]
+        element_seg = obs.get(f"{cam}_segmentation_element")
+        if element_seg is not None:
+            element_seg = np.asarray(element_seg)[..., 0]
         depth = None
         if self.use_depth:
             from robosuite.utils.camera_utils import get_real_depth_map
@@ -367,9 +413,54 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
             if nrm > 0:
                 rgb = rgb[:, nrm:W - nrm]
                 seg = seg[:, nrm:W - nrm]
+                if element_seg is not None:
+                    element_seg = element_seg[:, nrm:W - nrm]
                 if depth is not None:
                     depth = depth[:, nrm:W - nrm]
-        return rgb, seg, depth
+        return rgb, seg, element_seg, depth
+
+    def _robot_render_mask(self, instance_seg, element_seg, sim) -> np.ndarray:
+        """Return the full robot mask or a geom-filtered distal-link mask."""
+        full_mask = np.asarray(instance_seg) > 0
+        if not self.distal_only:
+            return full_mask.astype(np.uint8)
+        if element_seg is None:
+            if not self._distal_filter_warned:
+                logger.warning(
+                    "[retarget] distal-only requested but element segmentation is unavailable; "
+                    "using the full robot silhouette"
+                )
+                self._distal_filter_warned = True
+            return full_mask.astype(np.uint8)
+
+        model_key = id(sim.model)
+        allowed_ids = self._distal_geom_ids_cache.get(model_key)
+        if allowed_ids is None:
+            ids = []
+            selected_bodies = set()
+            for geom_id in range(sim.model.ngeom):
+                body_id = int(sim.model.geom_bodyid[geom_id])
+                body_name = sim.model.body_id2name(body_id) or ""
+                body_lower = body_name.lower()
+                is_robot = "robot" in body_lower or "gripper" in body_lower
+                if is_robot and any(token in body_lower for token in self.distal_body_tokens):
+                    ids.append(geom_id)
+                    selected_bodies.add(body_name)
+            allowed_ids = np.asarray(ids, dtype=np.int32)
+            self._distal_geom_ids_cache[model_key] = allowed_ids
+            logger.info(
+                "[retarget] distal-only keeps %d geoms on bodies=%s",
+                len(allowed_ids),
+                ",".join(sorted(selected_bodies)),
+            )
+        if allowed_ids.size == 0:
+            if not self._distal_filter_warned:
+                logger.warning(
+                    "[retarget] distal-only selected no robot geoms; using the full robot silhouette"
+                )
+                self._distal_filter_warned = True
+            return full_mask.astype(np.uint8)
+        return np.isin(np.asarray(element_seg), allowed_ids).astype(np.uint8)
 
     def _render_joint_positions_bimanual(
         self, q_right, q_left, width_r, width_l, open_r, open_l,
@@ -381,8 +472,8 @@ class RetargetInpaintProcessor(RobotInpaintProcessor):
         self._set_gripper_qpos(sim, width_r, open_r, robot_idx=0)
         self._set_gripper_qpos(sim, width_l, open_l, robot_idx=1)
         sim.forward()
-        rgb, seg, depth = self._obs_camera_rgb_seg_depth(env, sim)
-        robot_mask = (seg > 0).astype(np.uint8)
+        rgb, seg, element_seg, depth = self._obs_camera_rgb_seg_depth(env, sim)
+        robot_mask = self._robot_render_mask(seg, element_seg, sim)
         results: Dict[str, np.ndarray] = {
             "rgb_img": rgb.astype(np.float32) / 255.0,
             "robot_mask": robot_mask,

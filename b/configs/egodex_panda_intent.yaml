@@ -109,11 +109,27 @@ stageb_grip_rot_offset_deg: 90.0
 stageb_ori_scale: 0.2
 stageb_w_smooth: 1.0
 stageb_w_reg: 0.01
+# Null-space elbow swivel: biases the Panda upper-arm roll (mirrored per arm) to
+# steer the elbow out of the ego frustum. Left at 0 because it does not help this
+# task: the dominant occluder is link6 (wrist) sitting ~0.3 m from the lens, not
+# the elbow, and the left arm's optimum stayed in its original branch anyway.
+stageb_elbow_swivel_deg: 0.0
+# Extra regularizer weight on the swivel joint alone. Leave at 0: forcing the
+# branch with a strong pull (0.3) rather than seeding it made the left arm hit
+# max_nfev, costing 4.5 min/arm for no accuracy gain.
+stageb_w_reg_elbow: 0.0
 stageb_w_vel: 0.0
 stageb_dq_max: 0.3
 stageb_max_nfev: 2000            # 200 hits the cap on T=160 (success=False, ~13s)
+stageb_park_idle_arms: true
+stageb_idle_hand_span_thresh: 0.02  # m; no-grasp hands moving >=2cm still drive their arm
+stageb_idle_hand_min_frames: 5
 
 retarget_use_depth: false
+# Shoulders sit far enough back/below that the whole arm can render; flip this
+# on to fall back to wrist+gripper only if a task still shows upper-arm occlusion.
+retarget_distal_only: false
+retarget_distal_body_tokens: [link7, eef, gripper, finger, knuckle]
 contact_bimanual: true
 contact_bimanual_setup: shoulders_ego
 retarget_key_pos_thresh: 0.03
@@ -122,6 +138,7 @@ retarget_jerk_thresh: 0.05
 retarget_frame_pos_thresh: 0.05
 
 # Hand inpainting (ProPainter in a separate conda; not mixed into phantom)
+inpaint_both_hands: true
 inpaint_backend: propainter
 propainter_root: "/home/a26160/SRC/ProPainter"
 propainter_python: ""

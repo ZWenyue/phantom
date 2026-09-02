@@ -5,11 +5,13 @@ set -euo pipefail
 # Convert EgoDex HDF5 → Phantom format converter
 #
 # Usage:
-#   bash b/run_convert.sh                                    # default task, native res
+#   bash b/run_convert.sh                                    # default tasks, max 300
 #   bash b/run_convert.sh --task pour                        # different task
 #   bash b/run_convert.sh --tasks stack,vertical_pick_place  # batch (comma-separated)
 #   bash b/run_convert.sh --task stack --task stack_unstack_plates
-#   bash b/run_convert.sh --max-episodes 10                  # limit episodes
+#   bash b/run_convert.sh --max-demos 300                    # default
+#   bash b/run_convert.sh --max-demos all                    # every episode
+#   bash b/run_convert.sh --max-episodes 10                  # alias of --max-demos
 #   bash b/run_convert.sh --egodex-root /path/to/egodex      # custom source
 #   bash b/run_convert.sh --data-root /path/to/output        # custom output
 #   bash b/run_convert.sh --scale 0.5                        # half-res video + scaled K
@@ -21,17 +23,16 @@ DEFAULT_TASKS=(
 #   stack
 #   vertical_pick_place
 #   stack_unstack_plates
-#   stack_unstack_bowls
-#   stack_unstack_cups
-#   stack_unstack_tupperware
-  basic_pick_place
+  stack_unstack_bowls
+  stack_unstack_cups
+  stack_unstack_tupperware
 )
 TASKS=()
 # EGODEX_ROOT="/home/a26160/DATA/Ego-Dex/test"
 DATA_ROOT="/tmp/zwy/DATA/test_phantom"
-EGODEX_ROOT="/tmp/zwy/ego-dex/part2"
+EGODEX_ROOT="/tmp/zwy/ego-dex/part5"
 # DATA_ROOT="/home/a26160/DATA/tmp/test_phantom"
-MAX_EPISODES=""
+MAX_DEMOS="300"
 OVERWRITE=false
 SCALE=""
 HEIGHT="720"
@@ -55,12 +56,12 @@ while [[ $# -gt 0 ]]; do
         --task|--tasks)  append_tasks "$2"; shift 2 ;;
         --egodex-root)   EGODEX_ROOT="$2";  shift 2 ;;
         --data-root)     DATA_ROOT="$2";    shift 2 ;;
-        --max-episodes)  MAX_EPISODES="$2"; shift 2 ;;
+        --max-demos|--max-episodes) MAX_DEMOS="$2"; shift 2 ;;
         --overwrite)     OVERWRITE=true;    shift   ;;
         --scale)         SCALE="$2";        shift 2 ;;
         --height)        HEIGHT="$2";       shift 2 ;;
         -h|--help)
-            sed -n '3,17p' "$0"; exit 0 ;;
+            sed -n '3,20p' "$0"; exit 0 ;;
         *)
             echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -74,11 +75,19 @@ if [[ -n "$SCALE" && -n "$HEIGHT" ]]; then
     exit 1
 fi
 
+# --max-demos all|0|none → unlimited; default is 300.
+if [[ "${MAX_DEMOS}" == "all" || "${MAX_DEMOS}" == "0" || "${MAX_DEMOS}" == "none" ]]; then
+    MAX_DEMOS=""
+elif [[ ! "${MAX_DEMOS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--max-demos must be a positive integer or all" >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 COMMON_ARGS=("--egodex-root" "$EGODEX_ROOT" "--output-root" "$DATA_ROOT")
-if [[ -n "$MAX_EPISODES" ]]; then
-    COMMON_ARGS+=("--max-episodes" "$MAX_EPISODES")
+if [[ -n "$MAX_DEMOS" ]]; then
+    COMMON_ARGS+=("--max-episodes" "$MAX_DEMOS")
 fi
 if $OVERWRITE; then
     COMMON_ARGS+=("--overwrite")
@@ -95,6 +104,7 @@ for TASK in "${TASKS[@]}"; do
     echo "═══ CONVERT: ${TASK} ═══"
     echo "Source: ${EGODEX_ROOT}/${TASK}"
     echo "Output: ${DATA_ROOT}/egodex_${TASK}"
+    echo "Max demos: ${MAX_DEMOS:-all}"
     if [[ -n "$SCALE" ]]; then
         echo "Scale:  ${SCALE}"
     elif [[ -n "$HEIGHT" ]]; then

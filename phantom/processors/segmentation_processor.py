@@ -81,6 +81,11 @@ class BaseSegmentationProcessor(BaseProcessor):
         Returns:
             Dictionary containing left and right hand sequences
         """
+        if self.process_both_hands():
+            return {
+                "left": HandSequence.load(paths.hand_data_left),
+                "right": HandSequence.load(paths.hand_data_right),
+            }
         if self.bimanual_setup == "single_arm":
             if self.target_hand == "left":
                 return {"left": HandSequence.load(paths.hand_data_left)}
@@ -283,13 +288,15 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
             hand_detected = bbox_data[detected_key]
             kpts_2d = hamer_data[side].kpts_2d
             bbox_min_dist = bbox_data[dist_key]
+            hand_bboxes = bbox_data[f"{side}_bboxes"] if f"{side}_bboxes" in bbox_data else None
 
             if not hand_detected.any():
                 logger.info(f"No {side} hand detected in any frame, skipping")
                 continue
 
             init_idx, init_mask = self._find_best_init_frame(
-                imgs_rgb, hand_detected, kpts_2d, bbox_min_dist, top_k_candidates
+                imgs_rgb, hand_detected, kpts_2d, bbox_min_dist, top_k_candidates,
+                bboxes=hand_bboxes,
             )
 
             if init_mask is None:
@@ -302,9 +309,9 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
             masks_reverse = self._run_sam_from_mask(paths, init_mask, init_idx, reverse=True)
 
             for idx in masks_forward:
-                combined_masks[idx] |= masks_forward[idx][0]
+                combined_masks[idx] |= self._mask2d(masks_forward[idx])
             for idx in masks_reverse:
-                combined_masks[idx] |= masks_reverse[idx][0]
+                combined_masks[idx] |= self._mask2d(masks_reverse[idx])
 
         return combined_masks
 
@@ -315,6 +322,7 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         kpts_2d: np.ndarray,
         bbox_min_dist: np.ndarray,
         top_k: int = 20,
+        bboxes: Optional[np.ndarray] = None,
     ) -> Tuple[Optional[int], Optional[np.ndarray]]:
         """
         Find the best frame to initialize SAM2 with a Detectron2 mask.
@@ -322,6 +330,9 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         Selects top-K candidate frames (by bbox_min_dist_to_edge, hand detected,
         keypoints non-zero), runs Detectron2 on each, and picks the one with
         the highest-scoring person mask that contains hand keypoints.
+        If Detectron2 never overlaps the keypoints (common when its mask is
+        resized independently of the RGB / HaMeR coordinates), fall back to a
+        single-frame SAM2 mask from the hand bbox.
 
         Returns:
             (frame_index, 2D boolean mask) or (None, None) if no valid frame found.
@@ -343,6 +354,10 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         best_idx = None
         best_mask = None
         best_score = -1.0
+        # If keypoint matching fails because two stages disagree on coordinates,
+        # retain the best person mask that visibly overlaps the hand bbox. It is
+        # a much better arm prompt than a hand-only SAM box mask.
+        overlapping_person_masks = {}
 
         for idx in candidates:
             pred_masks, _, pred_scores = self.detectron_detector.get_person_masks(
@@ -352,13 +367,53 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
                 continue
 
             kpts = kpts_2d[idx]
+            ih, iw = imgs_rgb[idx].shape[:2]
             for i, m in enumerate(pred_masks):
-                if self._mask_contains_any_keypoint(m, kpts) and pred_scores[i] > best_score:
+                m2 = self._mask2d(m)
+                kpts_m = self._kpts_for_mask(kpts, m2.shape, (ih, iw))
+                if self._mask_contains_any_keypoint(m2, kpts_m) and pred_scores[i] > best_score:
                     best_score = pred_scores[i]
                     best_idx = idx
-                    best_mask = m
+                    best_mask = m2
+                if bboxes is not None and self._mask_overlaps_bbox(
+                    m2, bboxes[idx], image_hw=(ih, iw)
+                ):
+                    old = overlapping_person_masks.get(idx)
+                    if old is None or pred_scores[i] > old[0]:
+                        overlapping_person_masks[idx] = (float(pred_scores[i]), m2)
 
-        return best_idx, best_mask
+        if best_mask is not None:
+            return best_idx, best_mask
+
+        if bboxes is None:
+            return None, None
+        for idx in candidates:
+            box = np.asarray(bboxes[idx], dtype=np.float32).reshape(-1)
+            if box.size < 4 or float(np.abs(box[:4]).sum()) <= 0:
+                continue
+            try:
+                box_mask = self.detector_sam.segment_box(imgs_rgb[idx], box[:4])
+            except Exception as e:
+                logger.warning("SAM box prompt failed on frame %d: %s", idx, e)
+                continue
+            box_mask = self._mask2d(box_mask)
+            if int(box_mask.sum()) > 0:
+                person = overlapping_person_masks.get(idx)
+                if person is not None:
+                    combined = box_mask | person[1]
+                    logger.warning(
+                        "init frame %d from overlapping Detectron2 person + SAM hand box "
+                        "(keypoint match failed; person_score=%.3f)",
+                        idx, person[0],
+                    )
+                    return idx, combined
+                logger.warning(
+                    "init frame %d from hand-only SAM box prompt; no overlapping "
+                    "Detectron2 person mask was available, so sleeve coverage may be incomplete",
+                    idx,
+                )
+                return idx, box_mask
+        return None, None
 
     def _run_sam_from_mask(
         self,
@@ -375,7 +430,7 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         """
         _, video_segments = self.detector_sam.segment_video_from_mask(
             str(paths.original_images_folder),
-            mask,
+            self._mask2d(mask),
             frame_idx,
             reverse=reverse,
         )
@@ -413,12 +468,64 @@ class ArmSegmentationProcessor(BaseSegmentationProcessor):
         return result
 
     @staticmethod
+    def _mask2d(mask: np.ndarray) -> np.ndarray:
+        """Squeeze SAM/Detectron masks to a 2D boolean (H, W) array."""
+        m = np.asarray(mask)
+        while m.ndim > 2 and m.shape[0] == 1:
+            m = m[0]
+        if m.ndim > 2:
+            m = np.squeeze(m)
+        if m.ndim != 2:
+            raise ValueError(f"expected 2D mask, got shape {np.asarray(mask).shape}")
+        return m.astype(bool)
+
+    @staticmethod
+    def _kpts_for_mask(
+        keypoints: np.ndarray, mask_hw: Tuple[int, int], image_hw: Tuple[int, int]
+    ) -> np.ndarray:
+        """Scale image-space keypoints onto a possibly resized mask grid."""
+        kpts = np.asarray(keypoints, dtype=np.float32)
+        mh, mw = mask_hw
+        ih, iw = image_hw
+        if kpts.size == 0 or (mh, mw) == (ih, iw) or ih <= 0 or iw <= 0:
+            return kpts
+        scaled = kpts.copy()
+        scaled[..., 0] *= mw / float(iw)
+        scaled[..., 1] *= mh / float(ih)
+        return scaled
+
+    @staticmethod
+    def _mask_overlaps_bbox(
+        mask: np.ndarray, bbox: np.ndarray, image_hw: Tuple[int, int]
+    ) -> bool:
+        """Whether a person mask occupies a meaningful part of an image-space bbox."""
+        m = np.asarray(mask, dtype=bool)
+        box = np.asarray(bbox, dtype=np.float32).reshape(-1)
+        if m.ndim != 2 or box.size < 4 or not np.isfinite(box[:4]).all():
+            return False
+        mh, mw = m.shape
+        ih, iw = image_hw
+        if ih <= 0 or iw <= 0:
+            return False
+        x0, y0, x1, y1 = box[:4]
+        x0 = int(np.floor(np.clip(x0 * mw / iw, 0, mw)))
+        x1 = int(np.ceil(np.clip(x1 * mw / iw, 0, mw)))
+        y0 = int(np.floor(np.clip(y0 * mh / ih, 0, mh)))
+        y1 = int(np.ceil(np.clip(y1 * mh / ih, 0, mh)))
+        if x1 <= x0 or y1 <= y0:
+            return False
+        overlap = int(m[y0:y1, x0:x1].sum())
+        box_area = (x1 - x0) * (y1 - y0)
+        return overlap >= max(16, int(0.01 * box_area))
+
+    @staticmethod
     def _mask_contains_any_keypoint(mask: np.ndarray, keypoints: np.ndarray) -> bool:
         """Check if any keypoint falls inside the mask."""
-        h, w = mask.shape[-2:]
-        for kpt in keypoints:
+        m = np.asarray(mask)
+        h, w = m.shape[-2:]
+        for kpt in np.asarray(keypoints).reshape(-1, 2):
             x, y = int(round(kpt[0])), int(round(kpt[1]))
-            if 0 <= y < h and 0 <= x < w and mask[..., y, x]:
+            if 0 <= y < h and 0 <= x < w and bool(m[..., y, x]):
                 return True
         return False
 

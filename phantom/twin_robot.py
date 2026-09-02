@@ -140,7 +140,11 @@ class TwinRobot:
         # Camera and observation settings
         options["camera_heights"] = self.camera_height
         options["camera_widths"] = self.camera_width
-        options["camera_segmentations"] = "instance"  # Instance segmentation masks
+        # Keep the instance mask for backwards compatibility and expose raw
+        # per-geom IDs so Stage C can optionally keep only distal links.
+        options["camera_segmentations"] = [
+            ["instance", "element"] for _ in range(1 + len(self.debug_cameras))
+        ]
         options["direct_gripper_control"] = True
         options["use_depth_obs"] = True
         

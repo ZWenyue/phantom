@@ -11,6 +11,7 @@ set -euo pipefail
 #   bash b/run_convert2lerobot_retarget.sh
 #   bash b/run_convert2lerobot_retarget.sh --task basic_pick_place
 #   bash b/run_convert2lerobot_retarget.sh --dry-run
+#   bash b/run_convert2lerobot_retarget.sh --max-demos 300
 #   bash b/run_convert2lerobot_retarget.sh --require-grasp-release
 # =============================================================================
 
@@ -22,6 +23,7 @@ DST=""
 DRY_RUN=false
 REQUIRE_GRASP_RELEASE=false
 ALLOW_PARTIAL=false
+MAX_DEMOS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -30,17 +32,23 @@ while [[ $# -gt 0 ]]; do
         --dst-root)               DST_ROOT="$2";             shift 2 ;;
         --src)                    SRC="$2";                  shift 2 ;;
         --dst)                    DST="$2";                  shift 2 ;;
+        --max-demos)              MAX_DEMOS="$2";            shift 2 ;;
         --dry-run)                DRY_RUN=true;              shift ;;
         --require-grasp-release)  REQUIRE_GRASP_RELEASE=true; shift ;;
         --allow-partial-frames)   ALLOW_PARTIAL=true;        shift ;;
         -h|--help)
-            sed -n '3,15p' "$0"
+            sed -n '3,16p' "$0"
             exit 0 ;;
         *)
             echo "Unknown option: $1" >&2
             exit 1 ;;
     esac
 done
+
+if [[ -n "${MAX_DEMOS}" && ! "${MAX_DEMOS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--max-demos must be a positive integer" >&2
+    exit 1
+fi
 
 DEMO_NAME="egodex_${TASK}"
 if [[ -z "${SRC}" ]]; then
@@ -67,10 +75,14 @@ fi
 if $ALLOW_PARTIAL; then
     CMD+=(--allow-partial-frames)
 fi
+if [[ -n "${MAX_DEMOS}" ]]; then
+    CMD+=(--max-demos "${MAX_DEMOS}")
+fi
 
 echo "Task: ${TASK}"
 echo "Src:  ${SRC}"
 echo "Dst:  ${DST}"
+echo "Max demos: ${MAX_DEMOS:-all}"
 echo "▸ ${CMD[*]}"
 echo ""
 
